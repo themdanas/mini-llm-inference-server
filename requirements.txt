@@ -1,0 +1,39 @@
+# ── mini-llm-inference-server ──────────────────────────────────────────────
+# Runtime dependencies only. Dev/test deps live in requirements-dev.txt.
+# Install: pip install -r requirements.txt
+#
+# PyTorch: install the right variant for your hardware FIRST, then this file.
+#   CUDA 12.1:  pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+#   CUDA 11.8:  pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cu118
+#   CPU only:   pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
+#   Apple MPS:  pip install torch==2.3.1   (standard PyPI build includes MPS)
+# ---------------------------------------------------------------------------
+
+# ── Core deep learning ──────────────────────────────────────────────────────
+torch>=2.3.1                  # transformer forward pass, KV cache tensors, SDPA kernel
+numpy>=1.26.4,<2.0            # array ops, benchmark metric math; pin <2.0 for torch compat
+
+# ── Serving API ─────────────────────────────────────────────────────────────
+fastapi>=0.111.0              # async HTTP framework for /generate, /health, /metrics
+uvicorn[standard]>=0.30.1     # ASGI server; [standard] pulls in uvloop + httptools
+sse-starlette>=2.1.0          # Server-Sent Events streaming for token output
+pydantic>=2.7.1               # request/response schema validation (GenerateRequest etc.)
+httpx>=0.27.0                 # async HTTP client used by benchmark harness
+
+# ── Tokenizer ───────────────────────────────────────────────────────────────
+tokenizers>=0.19.1            # Hugging Face Rust tokenizer — BPE encode/decode, fast batch
+regex>=2024.5.15              # GPT-2 style byte-level BPE pre-tokenisation regex
+
+# ── Model weights & serialisation ───────────────────────────────────────────
+safetensors>=0.4.3            # fast, safe weight loading (no pickle); used in weights.py
+huggingface-hub>=0.23.3       # optional: download pretrained weights from HF Hub
+
+# ── Configuration & utilities ───────────────────────────────────────────────
+pyyaml>=6.0.1                 # load model/server config from YAML files
+python-dotenv>=1.0.1          # load .env vars (MODEL_PATH, PORT, BLOCK_SIZE etc.)
+rich>=13.7.1                  # pretty terminal output for scheduler logs and metrics
+tqdm>=4.66.4                  # progress bars during weight loading and benchmark sweeps
+einops>=0.8.0                 # readable tensor reshaping in attention (rearrange, repeat)
+
+# ── Async concurrency ───────────────────────────────────────────────────────
+anyio>=4.4.0                  # async primitives; uvicorn/fastapi depend on this anyway

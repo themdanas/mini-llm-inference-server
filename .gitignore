@@ -1,0 +1,11 @@
+.venv/
+venv/
+env/
+ENV/
+.infer_env/
+infer_env/
+
+__pycache__/
+*.py[cod]
+
+.pytest_cache/

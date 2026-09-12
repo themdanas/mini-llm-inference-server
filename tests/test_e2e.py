@@ -1,0 +1,1 @@
+print("hello, we are starting to code our project this is to test is python working correclty or not in the new env")
