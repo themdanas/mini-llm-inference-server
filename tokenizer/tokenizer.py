@@ -6,7 +6,7 @@ from tokenizer.vocabulary import Vocabulary, BYTE_TO_UNICODE
 
 
 GPT2_SPLIT_PATTERN = re.compile(
-    r"""'s| 't|'re|'ve|'m|'ll|'d| ?\w+| ?\d+|[^\s\w\d]+""",
+    r"""'s|'t|'re|'ve|'m|'ll|'d| ?\w+| ?\d+|[^\s\w\d]+""",
     re.UNICODE,
 )
 
@@ -26,13 +26,16 @@ def apply_merges(symbols: List[str], pair: Tuple[str, str]) -> List[str]:
     merged: List[str] = []
     i=0
 
-    while i < len(symbols):
-        if i<len(symbols) and (symbols[i],symbols[i+1]) == pair:
-            merged.append(symbols[i], symbols[i+1])
+    while i < len(symbols) - 1:
+        if (symbols[i],symbols[i+1]) == pair:
+            merged.append(symbols[i] + symbols[i+1])
             i += 2
         else:
             merged.append(symbols[i])
             i += 1
+
+    if i == len(symbols) - 1:
+        merged.append(symbols[i])
 
     return merged
 
@@ -67,9 +70,9 @@ class BPETokenizer:
 
     def __init__(self, vocab: Vocabulary, add_bos: bool = False, add_eos: bool = False):
 
-        self.vocab = vocab,
-        self.add_bos = add_bos,
-        self.add_eos = add_eos,
+        self.vocab = vocab
+        self.add_bos = add_bos
+        self.add_eos = add_eos
         self._word_cache: Dict[str, List[int]] = {}
 
     def encode(
@@ -77,7 +80,7 @@ class BPETokenizer:
             text: str,
             add_bos: Optional[bool] = None,
             add_eos: Optional[bool] = None,
-            max_len: Optional[int] = None,
+            max_length: Optional[int] = None,
             truncated: bool = True
     ) -> List[int]:
 
@@ -89,7 +92,7 @@ class BPETokenizer:
 
         token_ids: List[int] = []
         for word in words:
-            token_ids.extend(self._encode_word(word))
+            token_ids.extend(self._encode_words(word))
 
         #add speacial tokens
         if _add_bos:
@@ -98,8 +101,8 @@ class BPETokenizer:
             token_ids =  token_ids + [self.vocab.EOS_ID]
 
         #tuncated
-        if max_len is not None and truncated and len(token_ids) > max_len:
-            token_ids = token_ids[:max_len]
+        if max_length is not None and truncated and len(token_ids) > max_length:
+            token_ids = token_ids[:max_length]
 
         return token_ids
 
@@ -163,13 +166,13 @@ class BPETokenizer:
             self,
             texts: List[str],
             pad: bool = True,
-            max_len: Optional[int] = None,
+            max_length: Optional[int] = None,
             add_bos: Optional[bool] = None,
             add_eos: Optional[bool] = None,
     ) -> Tuple[List[List[int]], List[int]]:
         # Encode a batch of text with optional padding
         encoded = [
-            self.encode(text, add_bos=add_bos, add_eos=add_eos, max_len=max_len, truncated=True)
+            self.encode(text, add_bos=add_bos, add_eos=add_eos, max_length=max_length, truncated=True)
             for text in texts
         ]
         lengths = [len(ids) for ids in encoded]
@@ -177,7 +180,7 @@ class BPETokenizer:
         if not pad:
             return encoded, lengths
 
-        target_len = max_len if max_len is not None else max(lengths, default=0)
+        target_len = max_length if max_length is not None else max(lengths, default=0)
         padded = [
             ids + [self.vocab.PAD_ID] * (target_len - len(ids))
             for ids in encoded

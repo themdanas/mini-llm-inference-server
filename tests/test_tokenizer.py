@@ -10,7 +10,7 @@ from tokenizer.vocabulary import (
 )
 
 from tokenizer.tokenizer import (
-    BPETokenizer, get_pairs, apply_merge, bpe_encode_word, GPT2_SPLIT_PATTERN
+    BPETokenizer, get_pairs, apply_merges, bpe_encode_word, GPT2_SPLIT_PATTERN
 )
 
 #Fixure 
@@ -19,7 +19,7 @@ def tiny_vocab():
     return Vocabulary.tiny_synthetic(vocab_size=256)
 
 @pytest.fixture
-def tiny_tok():
+def tiny_tok(tiny_vocab):
     return BPETokenizer(tiny_vocab, add_bos=False, add_eos=False)
 
 @pytest.fixture
@@ -41,23 +41,23 @@ class TestBPEAlgorithm:
         assert get_pairs(["a", "b"]) == [("a", "b")]
  
     def test_apply_merge_basic(self):
-        result = apply_merge(["l", "o", "w", "e", "r"], ("l", "o"))
+        result = apply_merges(["l", "o", "w", "e", "r"], ("l", "o"))
         assert result == ["lo", "w", "e", "r"]
  
     def test_apply_merge_multiple(self):
         """All non-overlapping occurrences of the pair should be merged."""
-        result = apply_merge(["a", "b", "a", "b"], ("a", "b"))
+        result = apply_merges(["a", "b", "a", "b"], ("a", "b"))
         assert result == ["ab", "ab"]
  
     def test_apply_merge_overlapping(self):
         """Overlapping pairs: first match wins, greedy left-to-right."""
-        result = apply_merge(["a", "a", "a"], ("a", "a"))
+        result = apply_merges(["a", "a", "a"], ("a", "a"))
         # First "a","a" merged → ["aa", "a"]  (not ["a", "aa"])
         assert result == ["aa", "a"]
  
     def test_apply_merge_no_match(self):
         symbols = ["h", "e", "l", "l", "o"]
-        result = apply_merge(symbols, ("x", "y"))
+        result = apply_merges(symbols, ("x", "y"))
         assert result == symbols
  
     def test_bpe_encode_word_no_merges(self):
@@ -95,23 +95,23 @@ class TestBPEAlgorithm:
         assert get_pairs(["a", "b"]) == [("a", "b")]
  
     def test_apply_merge_basic(self):
-        result = apply_merge(["l", "o", "w", "e", "r"], ("l", "o"))
+        result = apply_merges(["l", "o", "w", "e", "r"], ("l", "o"))
         assert result == ["lo", "w", "e", "r"]
  
     def test_apply_merge_multiple(self):
         """All non-overlapping occurrences of the pair should be merged."""
-        result = apply_merge(["a", "b", "a", "b"], ("a", "b"))
+        result = apply_merges(["a", "b", "a", "b"], ("a", "b"))
         assert result == ["ab", "ab"]
  
     def test_apply_merge_overlapping(self):
         """Overlapping pairs: first match wins, greedy left-to-right."""
-        result = apply_merge(["a", "a", "a"], ("a", "a"))
+        result = apply_merges(["a", "a", "a"], ("a", "a"))
         # First "a","a" merged → ["aa", "a"]  (not ["a", "aa"])
         assert result == ["aa", "a"]
  
     def test_apply_merge_no_match(self):
         symbols = ["h", "e", "l", "l", "o"]
-        result = apply_merge(symbols, ("x", "y"))
+        result = apply_merges(symbols, ("x", "y"))
         assert result == symbols
  
     def test_bpe_encode_word_no_merges(self):

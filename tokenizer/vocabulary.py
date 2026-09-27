@@ -58,7 +58,7 @@ class Vocabulary:
             ):
 
         self.token_to_id = token_to_id
-        self.merge = merges
+        self.merges = merges
         self.id_to_token = {v: k for k,v in token_to_id.items()}
 
         self.merge_ranks: Dict[tuple[str,str], int] = {
@@ -76,7 +76,7 @@ class Vocabulary:
         return self.token_to_id.get(token, self.UNK_ID)
 
     def id_to_token_safe(self, token_id: int) -> str:
-        return self.id_to_token.get(id, self.UNK_TOKEN)
+        return self.id_to_token.get(token_id, self.UNK_TOKEN)
 
     def is_special(self, token_id:int) -> bool:
         return token_id in (self.PAD_ID, self.EOS_ID, self.BOS_ID, self.UNK_ID)
@@ -87,8 +87,10 @@ class Vocabulary:
 
     def byte_to_text(self, byte_char:List[str]) -> str:
         byte_values = [UNICODE_TO_BYTE[c] for c in byte_char]
+        return bytes(byte_values).decode("utf-8", errors="replace")
 
     #Factory methodes
+    @classmethod
     def from_files(cls, vocab_path: str, merges_path: str) ->"Vocabulary":
         #Load vocab and merger rules from files
 
@@ -114,24 +116,24 @@ class Vocabulary:
         # load the vocabulary from hugging face directory or model name
 
         try:
-            from transformers import Autotokenizer 
+            from transformers import AutoTokenizer 
         except ImportError:
             raise ImportError(
             "transformers are not Installed, run: pip install transformers" 
         )
 
-        hf_tok = AutoTokenizer.from_pretrained(model_name_or_path)
+        auto_tok = AutoTokenizer.from_pretrained(model_name_or_path)
 
-        token_to_id = dict(hf_tok.get_vocab())
+        token_to_id = dict(auto_tok.get_vocab())
 
         merges: List[tuple[str,str]] = []
-        if hasattr(hf_tok, 'bpe_ranks'):
+        if hasattr(auto_tok, 'bpe_ranks'):
             sorted_merges = sorted(hf_tok.bpe_ranks.items(), key=lambda x:x[1])
 
             merges = [pair for pair, _ in sorted_merges]
 
-        elif hasattr(hf_tok, 'merges'):
-            merges = [tuple(m.split()) for m in hf_tok.merges]
+        elif hasattr(auto_tok, 'merges'):
+            merges = [tuple(m.split()) for m in auto_tok.merges]
 
 
         return cls(token_to_id, merges)
@@ -139,24 +141,30 @@ class Vocabulary:
 
     @classmethod
     def tiny_synthetic(cls, vocab_size: int = 256) -> "Vocabulary":
-        # Building a tiny synthetic vocabulary for unit tests
+        """Build a tiny synthetic vocabulary for unit tests."""
         token_to_id: Dict[str, int] = {
-            cls.PAD_TOKEN :cls.PAD_ID,
-            cls.BOS_TOKEN :cls.BOS_ID,
-            cls.EOS_TOKEN :cls.EOS_ID,
-            cls.UNK_TOKEN :cls.UNK_ID,
+            cls.PAD_TOKEN: cls.PAD_ID,
+            cls.BOS_TOKEN: cls.BOS_ID,
+            cls.EOS_TOKEN: cls.EOS_ID,
+            cls.UNK_TOKEN: cls.UNK_ID,
         }
 
-        #filing the rest with single byte-level characters
-        def save(self, vocab_path: str, merges_path:str) -> None:
-            with open (vocab_path, "w", encoding="utf-8") as f:
-                json.dump(self.token_to_id, f, ensure_ascii=False, indent=2)
+        # Fill with byte-level characters first
+        from tokenizer.vocabulary import BYTE_TO_UNICODE
+        byte_chars = []
+        for byte_val in sorted(BYTE_TO_UNICODE.keys()):
+            char = BYTE_TO_UNICODE[byte_val]
+            if char not in token_to_id:
+                token_to_id[char] = len(token_to_id)
+                byte_chars.append(char)
 
-            with open(merges_path, "w", encoding="utf-8") as f:
-                f.write('#version: 1.0\n')
-                for a,b in self.merges:
-                    f.write(f"{a}{b}\n")
+        # Build merge rules from consecutive byte chars and add bigram tokens
+        merges: List[tuple[str, str]] = []
+        for i in range(len(byte_chars) - 1):
+            pair = (byte_chars[i], byte_chars[i + 1])
+            merges.append(pair)
+            bigram = pair[0] + pair[1]
+            if bigram not in token_to_id:
+                token_to_id[bigram] = len(token_to_id)
 
-        def __repr__(self) -> str:
-            return (f"Vocabulary(vocab_size={self.vocab_size}, "
-                    f"n_merges={len(self.merges)})")
+        return cls(token_to_id, merges)
