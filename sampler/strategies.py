@@ -18,14 +18,14 @@ def apply_temperature(logits: torch.Tensor, temperature:float) -> torch.Tensor:
 def apply_repetition_penalty(
         logits: torch.Tensor,
         generated_ids: List[int],
-        penlaty: float = 1.0,
+        penalty: float = 1.0,
 ) -> torch.Tensor:
 
-    if penlaty == 1.0 or not generated_ids:
+    if penalty == 1.0 or not generated_ids:
         return logits
 
-    if penlaty < 1.0:
-        raise ValueError(f"Repetition penalty must be >=1.0, got{penlaty}")
+    if penalty < 1.0:
+        raise ValueError(f"Repetition penalty must be >=1.0, got{penalty}")
 
     logits = logits.clone()
 
@@ -38,7 +38,7 @@ def apply_repetition_penalty(
     # Apply the penalty:
     # Positive logits: divide (make less positive → less probable)
     # Negative logits: multiply (make more negative → less probable)
-    score = torch.where(score > 0, score / penlaty, score*penlaty)
+    score = torch.where(score > 0, score / penalty, score*penalty)
 
     logits[..., unique_ids] = score
     return logits

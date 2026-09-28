@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from sampler.strategies import(
     apply_temperature,
-    apply_repetation_penalty,
+    apply_repetition_penalty,
     apply_top_k,
     apply_top_p,
     apply_min_p,
@@ -22,7 +22,7 @@ class SamplerConfig:
     temperature: float = 1.0
 
     top_k: int = 0
-    top_p: float = 0.0
+    top_p: float = 1.0
     min_p: float = 0.0
     rep_penalty: float = 1.0
 
@@ -33,10 +33,10 @@ class SamplerConfig:
     def __post_init__(self):
         if self.temperature <= 0:
             raise ValueError(f"temprature must be > 0, got {self.temperature}")
-        if self.top_k <= 0:
-            raise ValueError(f"top_k must be > 0, got{self.top_k}")
+        if self.top_k < 0:
+            raise ValueError(f"top_k must be >= 0, got{self.top_k}")
         if not 0.0 < self.top_p <= 1.0:
-            raise ValueError(f"top_p must be (0,1], got{self.top_k}")
+            raise ValueError(f"top_p must be (0,1], got{self.top_p}")
         if self.min_p < 0 or self.min_p >= 1.0: 
             raise ValueError(f"min_p must be in [0,1) got{self.min_p}")
         if self.rep_penalty < 1.0:
@@ -51,7 +51,7 @@ class SamplerConfig:
     @classmethod
     def creative(cls) -> "SamplerConfig":
         #High diversity for creating writing tasks
-        return cls(temperature=0.9, top_p=0.95, reg_penalty=1.1, max_new_tokens=512)
+        return cls(temperature=0.9, top_p=0.95, rep_penalty=1.1, max_new_tokens=512)
 
     @classmethod
     def balanced(cls) -> "SamplerConfig":
@@ -60,7 +60,7 @@ class SamplerConfig:
 
     @classmethod
     def conservative(cls) -> "SamplerConfig":
-        return cls(temperature=0.6, top_K=50, rep_penalty=1.2)
+        return cls(temperature=0.6, top_k=50, rep_penalty=1.2)
 
 
 #LogitsProcessor
@@ -84,11 +84,11 @@ class LogitsProcessor:
         #Greedy first path
         if self.config.greedy:
             result = greedy_sample(logits)
-            return result.unsqueez(0) if squeez else result
+            return result.squeeze(0) if squeez else result
 
         #1-> repetition penalty
         if self.config.rep_penalty != 1.0 and generated_ids:
-            logits = apply_repetation_penalty(
+            logits = apply_repetition_penalty(
                 logits, generated_ids, self.config.rep_penalty
             )
         
@@ -108,6 +108,7 @@ class LogitsProcessor:
             logits = apply_min_p(logits, self.config.min_p)
 
         result = multinomial_sample(logits)
+        return result.squeeze(0) if squeez else result
 
 
     def should_stop(
