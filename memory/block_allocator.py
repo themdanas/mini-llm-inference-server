@@ -39,9 +39,9 @@ class BlockAllocator:
             raise ValueError("no of blocks to allocate must be > 0")
         
         if len(self.free_list) < n:
-            raise RuntimeError(
+            raise MemoryError(
                 f"KV cache OOM: requested {n} blocks but only "
-                f"{len(self.free_list)} freee out of the {self.num_blocks} total blocks"
+                f"{len(self.free_list)} free out of the {self.num_blocks} total blocks"
             )
 
         allocated: List[PhysicalBlock] = []
@@ -49,8 +49,7 @@ class BlockAllocator:
         for _ in range(n):
             block_id = self.free_list.popleft()
             block = self.blocks[block_id]
-            became_free = block.released()
-            block.acquired()
+            block.acquire()
             allocated.append(block)
 
         return allocated
@@ -58,12 +57,12 @@ class BlockAllocator:
     def free(self, block: PhysicalBlock) -> None:
         # Release one block back to the free list 
         # Make sure this allocator actually owns this block.
-        if block.block_id not in self._blocks:
+        if block.block_id not in self.blocks:
             raise ValueError(
                 f"Unknown block ID: {block.block_id}"
             )
 
-        owned_block = self._blocks[block.block_id]
+        owned_block = self.blocks[block.block_id]
 
         if owned_block is not block:
             raise ValueError(
@@ -71,10 +70,10 @@ class BlockAllocator:
                 "to this allocator."
             )
 
-        became_free = block.released()
+        became_free = block.release()
         if became_free:
             block.reset()
-            self._free_list.append(block.block_id)
+            self.free_list.append(block.block_id)
 
     def free_list_of_blocks(self, blocks: List[PhysicalBlock]) -> None:
         # Convenience method to free a list of blocks at once
@@ -84,19 +83,19 @@ class BlockAllocator:
 
     def fork(self, block: PhysicalBlock) -> PhysicalBlock:
         """
-        Increament the ref_count of the block and return it.
+        Increment the ref_count of the block and return it.
         This is used when a block is shared between multiple owners.
 
         returns the same block object with incremented ref_count.
 
         """
-        if block.block_id not in self._blocks:
+        if block.block_id not in self.blocks:
             raise ValueError(
                 f"Unknown block ID: {block.block_id}"
             )
 
 
-        block.acquired()
+        block.acquire()
         return block
 
     def copy_on_write(self, block: PhysicalBlock) -> PhysicalBlock:
@@ -113,7 +112,7 @@ class BlockAllocator:
             """
 
         if not block.is_shared:
-            #already exclusive access, no need to copy
+            # already exclusive access, no need to copy
             return block, False
 
         [new_block] = self.allocate(1)
@@ -122,10 +121,10 @@ class BlockAllocator:
         if self._cow_cb is not None:
             self._cow_cb(block.block_id, new_block.block_id)
 
-        #Copy metadata that matters (num_filled, token_ids)
+        # Copy metadata that matters (num_filled, token_ids)
         new_block.num_filled = block.num_filled
         if block.token_ids is not None:
-            self._cow_cb(block.block_id, new_block.block_id)
+            new_block.token_ids = block.token_ids.copy()
 
 
         self.free(block)
@@ -139,9 +138,9 @@ class BlockAllocator:
         if n < 0:
             return False
 
-        return len(self._free_list) >= n
+        return len(self.free_list) >= n
 
-    def block_needed_for(self, num_tokens: int) -> int:
+    def blocks_needed_for(self, num_tokens: int) -> int:
 
         if num_tokens < 0:
             raise ValueError("num_tokens cannot be negative")
@@ -163,7 +162,7 @@ class BlockAllocator:
         return self.num_used_blocks / self.num_blocks
 
     def get_block(self, block_id: int) -> PhysicalBlock:
-        if block_id not in self._blocks:
+        if block_id not in self.blocks:
             raise KeyError(
                 f"Unknown block_id {block_id}. "
             )

@@ -18,13 +18,13 @@ class PhysicalBlock:
     def is_shared(self) -> bool:
         return self.ref_count > 1
 
-    def acquired(self) -> None:
+    def acquire(self) -> None:
         self.ref_count += 1
 
-    def released(self) -> None:
+    def release(self) -> bool:
         if self.ref_count <= 0:
             raise RuntimeError(
-                f"Block {self.block_id} released() called but ref_count is already 0"
+                f"Block {self.block_id} release() called but ref_count is already 0"
             )
         self.ref_count -= 1
         return self.ref_count == 0
