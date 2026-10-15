@@ -27,7 +27,7 @@ from memory.page_table import BlockTable
 from memory.kv_cache import PagedKVCache
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures 
 
 BLOCK_SIZE  = 4
 NUM_BLOCKS  = 16
@@ -52,10 +52,8 @@ def block_table(allocator):
     return BlockTable(seq_id=0, block_size=BLOCK_SIZE, allocator=allocator)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. PhysicalBlock
-# ══════════════════════════════════════════════════════════════════════════════
 
+#  PhysicalBlock
 class TestPhysicalBlock:
 
     def test_initial_state(self):
@@ -107,9 +105,9 @@ class TestPhysicalBlock:
         assert b.token_ids  is None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. BlockList
-# ══════════════════════════════════════════════════════════════════════════════
+
+#  BlockList
+
 
 class TestBlockList:
 
@@ -135,9 +133,9 @@ class TestBlockList:
         assert bl.block_ids == [5, 2, 9]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. BlockAllocator
-# ══════════════════════════════════════════════════════════════════════════════
+
+#  BlockAllocator
+
 
 class TestBlockAllocator:
 
@@ -207,9 +205,9 @@ class TestBlockAllocator:
         assert abs(allocator.utilization - 0.5) < 1e-6
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. BlockTable
-# ══════════════════════════════════════════════════════════════════════════════
+
+#  BlockTable
+
 
 class TestBlockTable:
 
@@ -296,9 +294,9 @@ class TestBlockTable:
         assert len(set(ids)) == 3
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. PagedKVCache
-# ══════════════════════════════════════════════════════════════════════════════
+
+#  PagedKVCache
+
 
 class TestPagedKVCache:
 
@@ -389,9 +387,9 @@ class TestPagedKVCache:
             )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 6. CRITICAL — Paged gather == naive contiguous cache
-# ══════════════════════════════════════════════════════════════════════════════
+
+#  CRITICAL — Paged gather == naive contiguous cache
+
 
 class TestPagedEquivalence:
     """
