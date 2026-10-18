@@ -159,6 +159,45 @@ class TestGenerate:
         )
         assert resp.status_code == 422
 
+    def test_generate_alias_endpoint(self, client):
+        """POST /generate without /v1 works identically."""
+        resp = client.post(
+            "/generate",
+            json={
+                "prompt": "test alias",
+                "max_new_tokens": 3,
+                "temperature": 0.0,
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "id" in body
+        assert body["usage"]["completion_tokens"] > 0
+
+    def test_generate_stop_string(self, client):
+        """Specifying a stop string terminates generation early."""
+        # Find token in greedy run
+        probe = client.post(
+            "/v1/generate",
+            json={"prompt": "stop probe", "max_new_tokens": 10, "temperature": 0.0},
+        ).json()
+        assert len(probe["text"]) > 1
+        stop_char = probe["text"][1]
+
+        resp = client.post(
+            "/v1/generate",
+            json={
+                "prompt": "stop probe",
+                "max_new_tokens": 10,
+                "temperature": 0.0,
+                "stop": [stop_char],
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["finish_reason"] == "stop_string"
+        assert stop_char not in body["text"]
+
 
 # ─── Streaming generation ──────────────────────────────────────────────────
 

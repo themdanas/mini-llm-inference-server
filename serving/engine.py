@@ -108,6 +108,7 @@ class InferenceEngine:
         self._request_results: Dict[str, GenerateResponse] = {}
         self._request_samplers: Dict[str, LogitsProcessor] = {}
         self._request_prompt_lens: Dict[str, int] = {}
+        self._streaming_requests: set[str] = set()
 
         # running token count for metrics
         self._tokens_generated: int = 0
@@ -203,30 +204,48 @@ class InferenceEngine:
         concurrently-running background task, which can deadlock under
         sync test clients (e.g. FastAPI ``TestClient``).
         """
+        if not self._running:
+            raise RuntimeError("InferenceEngine is not started. Call await engine.start() first.")
+
         request_id = self._submit_request(request)
         done_event = self._request_completions[request_id]
 
-        # drive the step loop from here until our request completes
-        while not done_event.is_set():
-            await self._run_one_step()
-            # tiny sleep to let other coroutines run
-            await asyncio.sleep(0)
+        try:
+            # drive the step loop from here until our request completes
+            while not done_event.is_set():
+                await self._run_one_step()
+                # tiny sleep to let other coroutines run
+                await asyncio.sleep(0)
 
-        result = self._request_results.pop(request_id)
-        self._cleanup_request(request_id)
-        return result
+            result = self._request_results.pop(request_id)
+            return result
+        finally:
+            self._cleanup_request(request_id)
 
     async def generate_stream(self, request: GenerateRequest) -> RequestStream:
         """Streaming generation.  Returns a ``RequestStream`` immediately."""
+        if not self._running:
+            raise RuntimeError("InferenceEngine is not started. Call await engine.start() first.")
         request_id = self._submit_request(request)
         return self._request_streams[request_id]
+
+    def cancel(self, request_id: str) -> bool:
+        """Cancel an in-flight request and clean up its resources."""
+        stream = self._request_streams.get(request_id)
+        if stream is not None:
+            stream.cancelled = True
+            stream.close()
+        cancelled = self._scheduler.cancel_request(request_id) if self._scheduler else False
+        self._streaming_requests.discard(request_id)
+        self._cleanup_request(request_id)
+        return cancelled
 
     def health(self) -> HealthResponse:
         return HealthResponse(
             status="ok" if self._running else "loading",
             model=repr(self._model_config) if self._model_config else "",
             device=self.config.device,
-            uptime_s=round(time.monotonic() - self._start_time, 1),
+            uptime_s=round(time.monotonic() - self._start_time, 1) if self._running else 0.0,
         )
 
     def metrics(self) -> MetricsResponse:
@@ -307,10 +326,16 @@ class InferenceEngine:
         self._request_kv_caches[request_id] = kv_caches
 
         # per-request stream + completion event
-        self._request_streams[request_id] = RequestStream(request_id)
+        self._request_streams[request_id] = RequestStream(
+            request_id,
+            on_close=self._on_stream_closed,
+        )
         self._request_completions[request_id] = asyncio.Event()
 
         # enqueue
+        if request.stream:
+            self._streaming_requests.add(request_id)
+
         self._scheduler.add_request(
             request_id=request_id,
             prompt_token_ids=prompt_ids,
@@ -346,54 +371,80 @@ class InferenceEngine:
         # ── Handle prefill sequences ─────────────────────────────
         for req in batch.prefill_requests:
             rid = req.request_id
+            if req.is_finished:
+                continue
             kv_caches = self._request_kv_caches.get(rid)
             if kv_caches is None:
                 continue
 
-            token_ids = torch.tensor(
-                [req.prompt_token_ids], dtype=torch.long,
-                device=torch.device(self.config.device),
-            )
-            with torch.inference_mode():
-                logits = self._model.forward(token_ids, kv_caches=kv_caches)
+            try:
+                token_ids = torch.tensor(
+                    [req.prompt_token_ids], dtype=torch.long,
+                    device=torch.device(self.config.device),
+                )
+                with torch.inference_mode():
+                    logits = self._model.forward(token_ids, kv_caches=kv_caches)
 
-            # sample from last position
-            last_logits = logits[:, -1, :]  # (1, vocab)
-            sampler = self._request_samplers.get(rid)
-            if sampler is not None:
-                token_id = sampler(last_logits, req.output_token_ids).item()
-            else:
-                token_id = last_logits.argmax(dim=-1).item()
+                # sample from last position
+                last_logits = logits[:, -1, :]  # (1, vocab)
+                sampler = self._request_samplers.get(rid)
+                if sampler is not None:
+                    token_id = sampler(last_logits, req.output_token_ids).item()
+                else:
+                    token_id = last_logits.argmax(dim=-1).item()
 
-            new_tokens[rid] = int(token_id)
+                new_tokens[rid] = int(token_id)
+            except Exception as exc:
+                logger.exception("Failure in prefill for %s: %s", rid, exc)
+                self.cancel(rid)
 
         # ── Handle decode sequences ──────────────────────────────
         for req in batch.decode_requests:
             rid = req.request_id
+            if req.is_finished:
+                continue
             kv_caches = self._request_kv_caches.get(rid)
             if kv_caches is None:
                 continue
 
-            # decode: forward only the last generated token
-            last_token = req.output_token_ids[-1] if req.output_token_ids else req.prompt_token_ids[-1]
-            token_ids = torch.tensor(
-                [[last_token]], dtype=torch.long,
-                device=torch.device(self.config.device),
-            )
-            with torch.inference_mode():
-                logits = self._model.forward(token_ids, kv_caches=kv_caches)
+            try:
+                # decode: forward only the last generated token
+                last_token = req.output_token_ids[-1] if req.output_token_ids else req.prompt_token_ids[-1]
+                token_ids = torch.tensor(
+                    [[last_token]], dtype=torch.long,
+                    device=torch.device(self.config.device),
+                )
+                with torch.inference_mode():
+                    logits = self._model.forward(token_ids, kv_caches=kv_caches)
 
-            last_logits = logits[:, -1, :]
-            sampler = self._request_samplers.get(rid)
-            if sampler is not None:
-                token_id = sampler(last_logits, req.output_token_ids).item()
-            else:
-                token_id = last_logits.argmax(dim=-1).item()
+                last_logits = logits[:, -1, :]
+                sampler = self._request_samplers.get(rid)
+                if sampler is not None:
+                    token_id = sampler(last_logits, req.output_token_ids).item()
+                else:
+                    token_id = last_logits.argmax(dim=-1).item()
 
-            new_tokens[rid] = int(token_id)
+                new_tokens[rid] = int(token_id)
+            except Exception as exc:
+                logger.exception("Failure in decode for %s: %s", rid, exc)
+                self.cancel(rid)
 
         # 3 — Update scheduler with generated tokens
         just_finished = self._scheduler.on_step_complete(new_tokens)
+
+        # Check for stop strings
+        for rid in new_tokens:
+            req = self._scheduler.get_request(rid)
+            if req is not None and not req.is_finished and req.sampling_params.stop_strings:
+                text_so_far = self._tokenizer.decode(req.output_token_ids)
+                matched_stop = False
+                for stop_str in req.sampling_params.stop_strings:
+                    if stop_str and stop_str in text_so_far:
+                        matched_stop = True
+                        break
+                if matched_stop:
+                    self._scheduler._finish_request(req, FinishReason.STOP_STRING)
+                    just_finished.append(req)
 
         # 4 — Push streaming chunks and handle completion
         for rid, token_id in new_tokens.items():
@@ -402,6 +453,8 @@ class InferenceEngine:
             if stream is None or stream.cancelled:
                 if stream and stream.cancelled:
                     self._scheduler.cancel_request(rid)
+                    self._streaming_requests.discard(rid)
+                    self._cleanup_request(rid)
                 continue
 
             # decode the single token to text
@@ -451,6 +504,17 @@ class InferenceEngine:
         # decode full output
         full_text = self._tokenizer.decode(req.output_token_ids)
 
+        if req.finish_reason == FinishReason.STOP_STRING and req.sampling_params.stop_strings:
+            earliest_idx = None
+            for s in req.sampling_params.stop_strings:
+                if s:
+                    idx = full_text.find(s)
+                    if idx != -1:
+                        if earliest_idx is None or idx < earliest_idx:
+                            earliest_idx = idx
+            if earliest_idx is not None:
+                full_text = full_text[:earliest_idx]
+
         # map finish reason
         reason_map = {
             FinishReason.EOS: "eos",
@@ -475,6 +539,11 @@ class InferenceEngine:
 
         self._request_results[rid] = result
 
+        # Free generation-only resources immediately
+        self._request_kv_caches.pop(rid, None)
+        self._request_samplers.pop(rid, None)
+        self._request_prompt_lens.pop(rid, None)
+
         # push final stream chunk with finish_reason, then sentinel
         stream = self._request_streams.get(rid)
         if stream is not None:
@@ -492,6 +561,27 @@ class InferenceEngine:
             rid, finish_reason, req.num_generated,
         )
 
+    def _on_stream_closed(self, stream: RequestStream) -> None:
+        """Called when a stream consumer has finished reading (or disconnected)."""
+        rid = stream.request_id
+        if stream.cancelled:
+            # Client disconnected / cancelled:
+            # 1. Cancel request in scheduler to free KV cache blocks immediately
+            if self._scheduler is not None:
+                self._scheduler.cancel_request(rid)
+            # 2. Clean up all per-request state
+            self._cleanup_request(rid)
+            self._streaming_requests.discard(rid)
+        else:
+            # Normal completion:
+            # Scheduler already freed KV blocks on finish.
+            # Generator has now finished sending all chunks to the client.
+            # Remove stream and any lingering streaming request state.
+            self._request_streams.pop(rid, None)
+            self._request_results.pop(rid, None)
+            self._request_completions.pop(rid, None)
+            self._streaming_requests.discard(rid)
+
     # ── Internal: cleanup ───────────────────────────────────────────────
 
     def _cleanup_request(self, request_id: str) -> None:
@@ -499,6 +589,7 @@ class InferenceEngine:
         self._request_kv_caches.pop(request_id, None)
         self._request_streams.pop(request_id, None)
         self._request_completions.pop(request_id, None)
+        self._request_results.pop(request_id, None)
         self._request_samplers.pop(request_id, None)
         self._request_prompt_lens.pop(request_id, None)
 

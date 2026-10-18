@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from sse_starlette.sse import EventSourceResponse
 
@@ -35,10 +35,16 @@ class RequestStream:
     client disconnects, and the engine checks this flag each step.
     """
 
-    def __init__(self, request_id: str) -> None:
+    def __init__(
+        self,
+        request_id: str,
+        on_close: Optional[Callable[[RequestStream], Any]] = None,
+    ) -> None:
         self.request_id = request_id
         self._queue: asyncio.Queue[Optional[StreamChunk]] = asyncio.Queue()
         self.cancelled = False
+        self._on_close = on_close
+        self._closed = False
 
     async def push(self, chunk: StreamChunk) -> None:
         """Enqueue a chunk.  Non-blocking in practice (unbounded queue)."""
@@ -49,13 +55,28 @@ class RequestStream:
         """Push a ``None`` sentinel to end the stream."""
         await self._queue.put(None)
 
+    def close(self) -> None:
+        """Signal that the consumer is done consuming the stream."""
+        if not self._closed:
+            self._closed = True
+            if self._on_close is not None:
+                try:
+                    res = self._on_close(self)
+                    if asyncio.iscoroutine(res):
+                        asyncio.create_task(res)
+                except Exception as exc:
+                    logger.warning("Error in on_close for %s: %s", self.request_id, exc)
+
     async def __aiter__(self):
         """Yield chunks until the sentinel ``None`` arrives."""
-        while True:
-            chunk = await self._queue.get()
-            if chunk is None:
-                break
-            yield chunk
+        try:
+            while True:
+                chunk = await self._queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+        finally:
+            self.close()
 
 
 def make_sse_response(stream: RequestStream) -> EventSourceResponse:
@@ -76,6 +97,8 @@ def make_sse_response(stream: RequestStream) -> EventSourceResponse:
         except asyncio.CancelledError:
             stream.cancelled = True
             logger.debug("SSE stream cancelled for %s", stream.request_id)
+        finally:
+            stream.close()
 
     return EventSourceResponse(
         _event_generator(),

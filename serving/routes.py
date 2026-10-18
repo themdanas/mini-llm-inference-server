@@ -35,7 +35,7 @@ router = APIRouter()
 
 def get_engine(request: Request):
     """Retrieve the ``InferenceEngine`` from the app state."""
-    engine = request.app.state.engine
+    engine = getattr(request.app.state, "engine", None)
     if engine is None:
         raise HTTPException(status_code=503, detail="Engine not initialised")
     return engine
@@ -56,6 +56,15 @@ def get_engine(request: Request):
         "Submit a prompt for text generation.  "
         "Set ``stream: true`` to receive tokens as Server-Sent Events."
     ),
+)
+@router.post(
+    "/generate",
+    response_model=GenerateResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+    include_in_schema=False,
 )
 async def generate(
     req: GenerateRequest,

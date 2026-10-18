@@ -44,12 +44,14 @@ async def lifespan(app: FastAPI):
     Start the engine before the first request arrives;
     shut it down when the server stops.
     """
-    engine: InferenceEngine = app.state.engine
-    await engine.start()
-    logger.info("NanoInfer engine is ready.")
+    engine: InferenceEngine | None = getattr(app.state, "engine", None)
+    if engine is not None:
+        await engine.start()
+        logger.info("NanoInfer engine is ready.")
     yield
-    await engine.shutdown()
-    logger.info("NanoInfer engine shut down cleanly.")
+    if engine is not None:
+        await engine.shutdown()
+        logger.info("NanoInfer engine shut down cleanly.")
 
 
 # ─── App factory ────────────────────────────────────────────────────────────
