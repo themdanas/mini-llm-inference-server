@@ -1,0 +1,2 @@
+[tool.pyrefly]
+python-interpreter-path = "infer_env/bin/python"

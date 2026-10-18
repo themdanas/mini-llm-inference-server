@@ -168,6 +168,22 @@ class Transformer(nn.Module):
 
         x = self.embedding(token_ids)
 
+        if token_ids.numel() > 0:
+            min_id = token_ids.min().item()
+            max_id = token_ids.max().item()
+            vocab_size = self.embedding.embedding.num_embeddings
+
+            if min_id < 0 or max_id >= vocab_size:
+                print(
+                    "[INVALID TOKEN IDS]",
+                    f"shape={tuple(token_ids.shape)}",
+                    f"min={min_id}",
+                    f"max={max_id}",
+                    f"vocab_size={vocab_size}",
+                    f"token_ids={token_ids.tolist()}",
+                    flush=True,
+                )
+
         attn_mask = None
 
         for i, block in enumerate(self.blocks):

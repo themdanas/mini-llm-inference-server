@@ -84,8 +84,9 @@ class ModelConfig:
     @classmethod
     def tiny(cls) -> "ModelConfig":
         #model config for unit test and CI
+        # vocab_size=515 matches BPETokenizer.tiny_test() vocabulary
         return cls(
-            vocab_size=256,
+            vocab_size=515,
             d_model=64,
             n_heads=4,
             n_kv_heads=4,

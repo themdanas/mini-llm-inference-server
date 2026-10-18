@@ -356,11 +356,11 @@ class TestTransformer:
         assert "rope_sin" not in param_names 
 
 
-# Critical: KV cache equilance 
+# Critical: KV cache equivalence 
 class TestKVCacheEquivalence:
     @torch.no_grad()
     def test_cached_vs_uncached_prefill_logits(self, cfg):
-       
+        
         torch.manual_seed(42)
         model = Transformer(cfg)
         model.eval()
@@ -368,11 +368,11 @@ class TestKVCacheEquivalence:
         ids = torch.randint(0, cfg.vocab_size, (1, 10))
 
         # no cache (standard forward)
-        logits_no_cache = model(ids, kv_cache=None)
+        logits_no_cache = model(ids, kv_caches=None)
 
-        #with cache (prefill only)
+        # with cache (prefill only)
         caches = model.build_kv_cache(batch_size=1)
-        logits_with_cache = model(ids, kv_cache=caches)
+        logits_with_cache = model(ids, kv_caches=caches)
 
         assert torch.allclose(logits_no_cache, logits_with_cache, atol=1e-5), \
             "Prefill with KV cache does not match full forward without cache"
@@ -390,24 +390,24 @@ class TestKVCacheEquivalence:
         # Generate a fixed sequence (prompt + decode target)
         all_ids = torch.randint(0, vocab, (1, prompt_len + n_decode))
 
-        #cached path
+        # cached path
         caches = model.build_kv_cache(batch_size=1)
 
-        #prefill : process entire prompt at once
-        _ = model(all_ids[:, :prompt_len], kv_cache=caches)
+        # prefill : process entire prompt at once
+        _ = model(all_ids[:, :prompt_len], kv_caches=caches)
 
         uncached_logits = []
         for step in range(n_decode):
             t = prompt_len + step
             full_ids = all_ids[:, :t+1]
-            logits = model(full_ids, kv_cache=None)
+            logits = model(full_ids, kv_caches=None)
             uncached_logits.append(logits[:, t, :])
 
         cached_logits = []
         for step in range(n_decode):
             t = prompt_len + step
             token = all_ids[:, t:t+1]
-            logits = model(token, kv_cache=caches)
+            logits = model(token, kv_caches=caches)
             cached_logits.append(logits[:, 0, :])  # decode step returns only the
 
         for step, (cached, uncached) in enumerate(zip(cached_logits, uncached_logits)):
