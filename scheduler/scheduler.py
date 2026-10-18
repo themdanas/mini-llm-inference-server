@@ -234,11 +234,11 @@ class Scheduler:
         req.admit()
         # Create per-sequence block table
         from memory.page_table import BlockTable   # late import avoids circular dep
-        bt = BlockTable(allocator=self._allocator, block_size=self._batch_manager.block_size)
+        bt = BlockTable(seq_id=req.request_id, allocator=self._allocator, block_size=self._batch_manager.block_size)
         bt.allocate_for_prompt(req.prompt_len)
         req.block_table = bt
         self._running.append(req)
-        logger.debug("Admitted %r  blocks=%d", req.request_id, len(self._allocator._blocks))
+        logger.debug("Admitted %r  blocks=%d", req.request_id, self._allocator.num_used_blocks)
 
     def _do_preempt(self, req: SequenceRequest) -> None:
         """
