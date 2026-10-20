@@ -108,6 +108,7 @@ class InferenceEngine:
         self._request_results: Dict[str, GenerateResponse] = {}
         self._request_samplers: Dict[str, LogitsProcessor] = {}
         self._request_prompt_lens: Dict[str, int] = {}
+        self._request_errors: Dict[str, str] = {}
         self._streaming_requests: set[str] = set()
 
         # running token count for metrics
@@ -217,7 +218,13 @@ class InferenceEngine:
                 # tiny sleep to let other coroutines run
                 await asyncio.sleep(0)
 
-            result = self._request_results.pop(request_id)
+            if request_id in self._request_errors:
+                err = self._request_errors.pop(request_id)
+                raise RuntimeError(f"Generation failed: {err}")
+
+            result = self._request_results.pop(request_id, None)
+            if result is None:
+                raise RuntimeError("Request was cancelled or terminated unexpectedly.")
             return result
         finally:
             self._cleanup_request(request_id)
@@ -229,7 +236,7 @@ class InferenceEngine:
         request_id = self._submit_request(request)
         return self._request_streams[request_id]
 
-    def cancel(self, request_id: str) -> bool:
+    def cancel(self, request_id: str, error: str | None = None) -> bool:
         """Cancel an in-flight request and clean up its resources."""
         stream = self._request_streams.get(request_id)
         if stream is not None:
@@ -237,6 +244,14 @@ class InferenceEngine:
             stream.close()
         cancelled = self._scheduler.cancel_request(request_id) if self._scheduler else False
         self._streaming_requests.discard(request_id)
+
+        if error:
+            self._request_errors[request_id] = error
+
+        done_event = self._request_completions.get(request_id)
+        if done_event is not None:
+            done_event.set()
+
         self._cleanup_request(request_id)
         return cancelled
 
@@ -274,6 +289,16 @@ class InferenceEngine:
         if not prompt_ids:
             prompt_ids = [self._tokenizer.vocab.BOS_ID]
 
+        max_seq_len = self._model_config.max_seq_len if self._model_config else 2048
+        if len(prompt_ids) >= max_seq_len:
+            raise ValueError(
+                f"Prompt length ({len(prompt_ids)}) exceeds model context length ({max_seq_len})."
+            )
+
+        # Clamp max_new_tokens so prompt + generation never exceeds model context / RoPE limits
+        allowed_new_tokens = max(1, max_seq_len - len(prompt_ids))
+        effective_max_new_tokens = min(request.max_new_tokens, allowed_new_tokens)
+
         self._request_prompt_lens[request_id] = len(prompt_ids)
 
         # build scheduler-level SamplingParams
@@ -282,7 +307,7 @@ class InferenceEngine:
             eos_ids.append(self._model_config.eos_token_id)
 
         sched_params = SamplingParams(
-            max_new_tokens=request.max_new_tokens,
+            max_new_tokens=effective_max_new_tokens,
             temperature=request.temperature,
             top_k=request.top_k,
             top_p=request.top_p,
@@ -300,7 +325,7 @@ class InferenceEngine:
             top_p=request.top_p,
             min_p=request.min_p,
             rep_penalty=request.repetition_penalty,
-            max_new_tokens=request.max_new_tokens,
+            max_new_tokens=effective_max_new_tokens,
             stop_token_ids=eos_ids,
         )
         self._request_samplers[request_id] = LogitsProcessor(sampler_cfg)
@@ -396,7 +421,7 @@ class InferenceEngine:
                 new_tokens[rid] = int(token_id)
             except Exception as exc:
                 logger.exception("Failure in prefill for %s: %s", rid, exc)
-                self.cancel(rid)
+                self.cancel(rid, error=str(exc))
 
         # ── Handle decode sequences ──────────────────────────────
         for req in batch.decode_requests:
@@ -427,7 +452,7 @@ class InferenceEngine:
                 new_tokens[rid] = int(token_id)
             except Exception as exc:
                 logger.exception("Failure in decode for %s: %s", rid, exc)
-                self.cancel(rid)
+                self.cancel(rid, error=str(exc))
 
         # 3 — Update scheduler with generated tokens
         just_finished = self._scheduler.on_step_complete(new_tokens)

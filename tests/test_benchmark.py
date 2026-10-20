@@ -373,7 +373,7 @@ class TestHarnessIntegration:
 
     @pytest.mark.anyio
     async def test_harness_run_completes(self, server_url):
-        templates = make_random_templates(4, min_new_tokens=2, max_new_tokens=4)
+        templates = make_random_templates(4, min_words=2, max_words=4, min_new_tokens=2, max_new_tokens=4)
         config = HarnessConfig(
             templates=templates,
             concurrency=2,
@@ -386,7 +386,7 @@ class TestHarnessIntegration:
 
     @pytest.mark.anyio
     async def test_harness_records_ttft(self, server_url):
-        templates = make_random_templates(4, min_new_tokens=2, max_new_tokens=4)
+        templates = make_random_templates(4, min_words=2, max_words=4, min_new_tokens=2, max_new_tokens=4)
         config = HarnessConfig(
             templates=templates,
             concurrency=2,
@@ -399,7 +399,7 @@ class TestHarnessIntegration:
 
     @pytest.mark.anyio
     async def test_harness_throughput_positive(self, server_url):
-        templates = make_random_templates(4, min_new_tokens=2, max_new_tokens=4)
+        templates = make_random_templates(4, min_words=2, max_words=4, min_new_tokens=2, max_new_tokens=4)
         config = HarnessConfig(
             templates=templates,
             concurrency=2,
