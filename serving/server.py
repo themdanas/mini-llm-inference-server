@@ -16,8 +16,11 @@ import argparse
 import logging
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from serving.engine import EngineConfig, InferenceEngine
 from serving.routes import router
@@ -78,6 +81,15 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
     app.state.engine = engine
 
     app.include_router(router)
+
+    # Mount static assets and serve dashboard UI
+    web_dir = Path(__file__).resolve().parent.parent / "web"
+    if web_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(web_dir)), name="static")
+
+        @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+        async def serve_index():
+            return FileResponse(str(web_dir / "index.html"))
 
     return app
 

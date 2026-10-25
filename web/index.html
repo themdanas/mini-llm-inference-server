@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>NanoInfer · mini-llm-inference-server</title>
+  <meta name="description" content="Minimal, high-performance LLM inference server showing the pipeline architecture alongside interactive benchmarks, streaming playground, and real-time telemetry.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/static/style.css" onerror="this.onerror=null;this.href='style.css'">
+</head>
+<body>
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header>
+    <div class="header-left">
+      <div class="logo" title="NanoInfer Architecture">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <rect x="1" y="3" width="6" height="4" rx="1"/>
+          <rect x="9" y="3" width="6" height="4" rx="1"/>
+          <rect x="5" y="10" width="6" height="4" rx="1"/>
+          <line x1="4" y1="7" x2="8" y2="10"/>
+          <line x1="12" y1="7" x2="8" y2="10"/>
+        </svg>
+      </div>
+      <div class="title-wrap">
+        <h1>NanoInfer</h1>
+        <span class="sub-title">mini-llm-inference-server</span>
+      </div>
+      <span class="badge">v0.1.0</span>
+    </div>
+    <div class="header-right">
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-label" id="statusLabel">offline</span>
+      <button class="theme-btn" id="themeBtn" title="Toggle Light / Dark mode" onclick="cycleTheme()">◑</button>
+    </div>
+  </header>
+
+  <!-- ── Main Layout ─────────────────────────────────────────────────────── -->
+  <main class="main">
+
+    <!-- LEFT COLUMN: Pipeline Architecture -->
+    <section class="left-col" aria-label="Pipeline Architecture">
+      <div class="section-header-row">
+        <div class="section-label">Pipeline Architecture</div>
+        <div class="section-actions">
+          <button class="text-btn" onclick="expandAllPhases(true)">Expand all</button>
+          <span class="sep">/</span>
+          <button class="text-btn" onclick="expandAllPhases(false)">Collapse</button>
+        </div>
+      </div>
+      <div class="pipeline" id="pipeline"></div>
+    </section>
+
+    <!-- RIGHT COLUMN: Benchmarks & Live Telemetry -->
+    <section class="right-col" aria-label="Benchmarks and Live Telemetry">
+
+      <!-- 1. Server Connection & Telemetry -->
+      <div class="card" id="serverCard">
+        <div class="card-header-row">
+          <div class="section-label">Server & Telemetry</div>
+          <div class="card-badge" id="modelDeviceBadge">tiny · cpu</div>
+        </div>
+
+        <div class="server-url-row">
+          <input class="url-input" id="serverUrl" value="http://localhost:8000" placeholder="http://localhost:8000" spellcheck="false">
+          <button class="btn" id="connectBtn" onclick="toggleConnect()">Connect</button>
+        </div>
+        <div class="err-msg" id="connectErr"></div>
+
+        <!-- 4-tile Metrics Grid -->
+        <div class="metrics-grid" id="metricsGrid">
+          <div class="metric-tile">
+            <div class="metric-val" id="mTps">—</div>
+            <div class="metric-label">tokens / sec</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-val" id="mRunning">—</div>
+            <div class="metric-label">active requests</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-val" id="mBlocks">—</div>
+            <div class="metric-label">free KV blocks</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-val" id="mUptime">—</div>
+            <div class="metric-label">uptime</div>
+          </div>
+        </div>
+
+        <!-- Secondary metrics pill -->
+        <div class="metrics-row" id="metricsRow" style="display:none">
+          <div class="metrics-pill"><span>total req: </span><b id="mTotal">0</b></div>
+          <div class="metrics-pill"><span>waiting: </span><b id="mWaiting">0</b></div>
+          <div class="metrics-pill"><span>preemptions: </span><b id="mPreempt">0</b></div>
+          <div class="metrics-pill"><span>avg TTFT: </span><b id="mTtft">—</b></div>
+        </div>
+
+        <!-- Real-time Sparkline -->
+        <div class="sparkline-wrap">
+          <div class="sparkline-label-row">
+            <span>throughput (tok/s · last 30s)</span>
+            <span id="sparkMax" class="spark-max">max: —</span>
+          </div>
+          <canvas class="spark" id="sparkCanvas" width="640" height="72"></canvas>
+        </div>
+
+        <!-- Compact Paged KV Cache Grid -->
+        <div class="kv-mini-wrap" id="kvMiniWrap">
+          <div class="kv-header-row">
+            <span class="sparkline-label">Paged KV Cache</span>
+            <span class="kv-stats" id="kvStatsText">128 / 128 free</span>
+          </div>
+          <div class="kv-grid" id="kvGrid"></div>
+          <div class="kv-legend">
+            <span class="kv-legend-item"><span class="swatch free"></span> free</span>
+            <span class="kv-legend-item"><span class="swatch allocated"></span> allocated</span>
+            <span class="kv-legend-item"><span class="swatch write"></span> writing</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Benchmark Suite (Alongside) -->
+      <div class="card" id="benchmarkCard">
+        <div class="card-header-row">
+          <div class="section-label">Benchmark Suite</div>
+          <div class="mode-toggles">
+            <button class="mode-btn active" id="btnModeSingle" onclick="setBenchMode('single')">Load Test</button>
+            <button class="mode-btn" id="btnModeSweep" onclick="setBenchMode('sweep')">Sweep</button>
+          </div>
+        </div>
+
+        <p class="bench-desc">
+          Measure TTFT, inter-token time (TBT), and concurrency scaling against continuous batching scheduler.
+        </p>
+
+        <!-- Benchmark Presets -->
+        <div class="bench-presets">
+          <button class="preset-pill" onclick="applyBenchPreset(2, 10, 32)">Quick (C=2, N=10)</button>
+          <button class="preset-pill" onclick="applyBenchPreset(4, 25, 32)">Standard (C=4, N=25)</button>
+          <button class="preset-pill" onclick="applyBenchPreset(8, 50, 48)">Stress (C=8, N=50)</button>
+        </div>
+
+        <!-- Benchmark Controls -->
+        <div class="bench-controls">
+          <div class="control-col" id="concurrencyCol">
+            <label class="control-lbl">Concurrency <span id="valBenchC" class="val-num">4</span></label>
+            <input type="range" min="1" max="16" value="4" id="sliderBenchC" oninput="document.getElementById('valBenchC').textContent=this.value">
+          </div>
+          <div class="control-col">
+            <label class="control-lbl">Requests <span id="valBenchN" class="val-num">20</span></label>
+            <input type="range" min="4" max="80" step="2" value="20" id="sliderBenchN" oninput="document.getElementById('valBenchN').textContent=this.value">
+          </div>
+          <div class="control-col">
+            <label class="control-lbl">Max Tokens <span id="valBenchTok" class="val-num">32</span></label>
+            <input type="range" min="8" max="96" step="8" value="32" id="sliderBenchTok" oninput="document.getElementById('valBenchTok').textContent=this.value">
+          </div>
+        </div>
+
+        <div class="bench-actions">
+          <button class="btn btn-primary" id="benchRunBtn" onclick="runBenchmark()">▶ Run Benchmark</button>
+          <button class="btn btn-danger" id="benchStopBtn" onclick="stopBenchmark()" style="display:none">■ Stop</button>
+          <div class="bench-status-inline" id="benchStatusInline">Idle</div>
+        </div>
+
+        <!-- Live Progress Bar -->
+        <div class="bench-progress-wrap" id="benchProgressWrap" style="display:none">
+          <div class="bench-bar-track">
+            <div class="bench-bar-fill" id="benchBarFill" style="width: 0%"></div>
+          </div>
+          <div class="bench-progress-meta">
+            <span id="benchProgressText">0 / 20 finished</span>
+            <span id="benchInFlightText">0 in flight</span>
+          </div>
+        </div>
+
+        <div class="err-msg" id="benchErr"></div>
+
+        <!-- Benchmark Results Panel -->
+        <div class="bench-results" id="benchResults" style="display:none">
+          <div class="results-header">
+            <span class="results-title" id="resultsTitle">Benchmark Results</span>
+            <span class="results-meta" id="resultsMeta">C=4 · 20 reqs · 2.45s</span>
+          </div>
+
+          <div class="results-tiles-grid">
+            <div class="res-tile highlight">
+              <div class="res-val" id="resTps">—</div>
+              <div class="res-label">Throughput (tok/s)</div>
+            </div>
+            <div class="res-tile">
+              <div class="res-val" id="resTtftP50">—</div>
+              <div class="res-label">TTFT P50 (ms)</div>
+            </div>
+            <div class="res-tile">
+              <div class="res-val" id="resTbtP50">—</div>
+              <div class="res-label">TBT P50 (ms)</div>
+            </div>
+            <div class="res-tile">
+              <div class="res-val" id="resE2eP50">—</div>
+              <div class="res-label">E2E Latency P50 (ms)</div>
+            </div>
+          </div>
+
+          <!-- Percentile Distribution Table -->
+          <div class="res-table-wrap">
+            <table class="res-table">
+              <thead>
+                <tr>
+                  <th>Metric (ms)</th>
+                  <th>Min</th>
+                  <th>P50</th>
+                  <th>P90</th>
+                  <th>P99</th>
+                  <th>Max</th>
+                </tr>
+              </thead>
+              <tbody id="resTbody">
+                <tr><td colspan="6">No benchmark data yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="res-footer-stats" id="resFooterStats"></div>
+
+          <!-- Concurrency Sweep Chart (Canvas) -->
+          <div class="sweep-chart-wrap" id="sweepChartWrap" style="display:none">
+            <div class="sparkline-label-row">
+              <span>Throughput & TTFT vs Concurrency</span>
+              <span class="sweep-legend">
+                <span class="leg-tps">■ tok/s</span>
+                <span class="leg-ttft">■ TTFT p50</span>
+              </span>
+            </div>
+            <canvas class="spark" id="sweepCanvas" width="640" height="120"></canvas>
+            <div class="sweep-table-wrap" id="sweepTableWrap"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Try It (Interactive Streaming Playground) -->
+      <div class="card" id="tryCard">
+        <div class="card-header-row">
+          <div class="section-label">Try It · Streaming Playground</div>
+          <div class="presets-row">
+            <button class="preset-pill" onclick="setPromptPreset('The quick brown fox jumps over the lazy dog and')">Fox</button>
+            <button class="preset-pill" onclick="setPromptPreset('Continuous batching differs from static batching because')">Batching</button>
+            <button class="preset-pill" onclick="setPromptPreset('Paged KV cache solves memory fragmentation by')">Paged Cache</button>
+            <button class="preset-pill" onclick="setPromptPreset('Write a Python function for causal multi-head self-attention:')">Code</button>
+          </div>
+        </div>
+
+        <textarea class="prompt-area" id="promptInput" rows="2" placeholder="Enter a prompt…">The quick brown fox jumps over</textarea>
+
+        <div class="try-controls">
+          <div class="slider-wrap">
+            max <input type="range" min="4" max="128" value="32" id="maxTokens" oninput="document.getElementById('tokVal').textContent=this.value">
+            <span class="slider-val" id="tokVal">32</span> tok
+          </div>
+          <div class="slider-wrap">
+            temp <input type="range" min="0" max="1.5" step="0.1" value="0.7" id="tempSlider" oninput="document.getElementById('tempVal').textContent=this.value">
+            <span class="slider-val" id="tempVal">0.7</span>
+          </div>
+          <div class="try-actions">
+            <button class="btn secondary" id="stopBtn" onclick="stopGen()" style="display:none">■ Stop</button>
+            <button class="btn btn-primary" id="genBtn" onclick="startGen()">▶ Generate</button>
+          </div>
+        </div>
+
+        <div class="output-box" id="outputBox">
+          <span class="placeholder-text">Output appears here with real-time SSE streaming…</span>
+        </div>
+        <div class="try-stats" id="tryStats"></div>
+        <div class="err-msg" id="genErr"></div>
+      </div>
+
+      <!-- 4. Test Suite Summary -->
+      <div class="card" id="testCard">
+        <div class="card-header-row">
+          <div class="section-label">Test Suite</div>
+          <span class="badge ok">297 / 297 PASSING</span>
+        </div>
+        <div id="testRows"></div>
+      </div>
+
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-left">
+      <span><b>NanoInfer</b> · Minimal High-Performance LLM Inference Server</span>
+    </div>
+    <div class="footer-right">
+      <span class="footer-dim">Phase 1–5 Built from Scratch</span>
+      <span class="sep">·</span>
+      <a href="https://github.com/themdanas/mini-llm-inference-server" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
+  </footer>
+
+  <script src="/static/app.js" onerror="this.onerror=null;this.src='app.js'"></script>
+</body>
+</html>

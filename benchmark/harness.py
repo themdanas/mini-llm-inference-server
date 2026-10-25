@@ -28,7 +28,7 @@ class RequestTemplate:
     stream: bool = True
 
 
-def _random_prompt(min_words: int = 5, max_words: int = 40) -> str:
+def _random_prompt(min_words: int = 4, max_words: int = 18) -> str:
     """Generate a dummy prompt of random length for load testing."""
     words = [
         "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
@@ -42,10 +42,10 @@ def _random_prompt(min_words: int = 5, max_words: int = 40) -> str:
  
 def make_random_templates(
     n: int,
-    min_words:      int = 5,
-    max_words:      int = 40,
-    min_new_tokens: int = 16,
-    max_new_tokens: int = 128,
+    min_words:      int = 4,
+    max_words:      int = 18,
+    min_new_tokens: int = 8,
+    max_new_tokens: int = 48,
     temperature:    float = 1.0,
 ) -> List[RequestTemplate]:
     """Generate N random request templates for a load test."""

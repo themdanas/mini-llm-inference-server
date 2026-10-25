@@ -7,7 +7,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11-blue.svg" alt="Python 3.10 | 3.11">
   <img src="https://img.shields.io/badge/pytorch-2.3%2B-ee4c2c.svg" alt="PyTorch 2.3+">
-  <img src="https://img.shields.io/badge/tests-294%20passed-brightgreen.svg" alt="Tests 294 passed">
+  <img src="https://img.shields.io/badge/tests-297%20passed-brightgreen.svg" alt="Tests 297 passed">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT">
 </p>
 
@@ -250,10 +250,18 @@ python -m serving.server \
 
 ### Querying the Engine
 
-#### 1. Interactive Swagger UI
-Open **[http://localhost:8000/docs](http://localhost:8000/docs)** in your browser to inspect schemas and send requests interactively.
+#### 1. Interactive Observability & Inference Dashboard
+NanoInfer includes a built-in dark glassmorphic web dashboard for real-time inference playground, live Paged KV Cache block visualization, and continuous batching telemetry.
 
-#### 2. Standard Generation via `curl`
+Open **[http://localhost:8000/](http://localhost:8000/)** in your browser.
+- **Inference Playground:** Live token generation with SSE streaming, TTFT/TPS metrics, and dynamic sampling controls (temperature, top-p, top-k, repetition penalty).
+- **Paged KV Cache Visualizer:** Real-time physical memory block grid displaying free, allocated, and active-write cache blocks dynamically during prefill and decode.
+- **Continuous Batching Monitor:** Live table showing active requests, execution phases (PREFILL / DECODE), generated token counts, and memory footprint.
+
+#### 2. Interactive Swagger UI
+Open **[http://localhost:8000/docs](http://localhost:8000/docs)** in your browser to inspect OpenAPI schemas and send requests interactively.
+
+#### 3. Standard Generation via `curl`
 ```bash
 curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
@@ -406,6 +414,39 @@ Provides Prometheus-style telemetry:
   "avg_ttft_ms": 9.2,
   "avg_latency_ms": 32.8,
   "kv_cache_utilization": 0.125
+}
+```
+
+### `GET /api/state`
+Returns real-time engine telemetry powering the visual dashboard, including physical KV cache block occupancy and active continuous batching sequence metadata:
+```json
+{
+  "memory": {
+    "total_blocks": 128,
+    "free_blocks": 120,
+    "used_blocks": 8,
+    "utilization": 0.0625,
+    "blocks": [
+      {"id": 0, "state": "allocated", "ref_count": 1, "num_filled": 16, "request_id": "a1b2c3d4e5f6"}
+    ]
+  },
+  "scheduler": {
+    "num_running": 1,
+    "num_waiting": 0,
+    "steps": 42,
+    "preemptions": 0,
+    "running": [
+      {"id": "a1b2c3d4e5f6", "phase": "RUNNING", "prompt_len": 12, "generated_len": 8, "block_ids": [0]}
+    ],
+    "waiting": []
+  },
+  "metrics": {
+    "requests_total": 12,
+    "tokens_generated": 184,
+    "avg_ttft_ms": 8.4,
+    "avg_latency_ms": 28.1,
+    "uptime_s": 120.0
+  }
 }
 ```
 

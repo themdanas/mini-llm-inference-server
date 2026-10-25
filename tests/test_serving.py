@@ -612,6 +612,29 @@ class TestServingRoutesAndServer:
         assert "tokens_generated" in body
         assert "kv_cache_utilization" in body
 
+    def test_state_endpoint(self, client):
+        resp = client.get("/api/state")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "memory" in body
+        assert "scheduler" in body
+        assert "metrics" in body
+        assert "total_blocks" in body["memory"]
+        assert "blocks" in body["memory"]
+        assert len(body["memory"]["blocks"]) == body["memory"]["total_blocks"]
+
+    def test_serve_dashboard_index(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "NanoInfer" in resp.text
+        assert "text/html" in resp.headers.get("content-type", "")
+
+    def test_serve_static_assets(self, client):
+        css_resp = client.get("/static/style.css")
+        assert css_resp.status_code == 200
+        js_resp = client.get("/static/app.js")
+        assert js_resp.status_code == 200
+
     def test_generate_v1_endpoint(self, client):
         resp = client.post(
             "/v1/generate",

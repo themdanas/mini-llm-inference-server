@@ -275,6 +275,87 @@ class InferenceEngine:
             kv_cache_utilization=self._kv_cache.utilization if self._kv_cache else 0.0,
         )
 
+    def state(self) -> dict:
+        """Snapshot of live KV cache memory and scheduler queue for observability."""
+        num_blocks = self._kv_cache.allocator.num_blocks if self._kv_cache else 0
+        num_free = self._kv_cache.allocator.num_free_blocks if self._kv_cache else 0
+        num_used = self._kv_cache.allocator.num_used_blocks if self._kv_cache else 0
+        utilization = self._kv_cache.allocator.utilization if self._kv_cache else 0.0
+
+        active_write_blocks = set()
+        req_block_map: dict[int, str] = {}
+        running_reqs = []
+
+        if self._scheduler:
+            for req in list(self._scheduler._running):
+                b_ids = req.block_table.get_block_ids() if req.block_table else []
+                if b_ids:
+                    active_write_blocks.add(b_ids[-1])
+                for bid in b_ids:
+                    req_block_map[bid] = req.request_id
+                running_reqs.append({
+                    "id": req.request_id,
+                    "phase": req.status.name,
+                    "prompt_len": req.prompt_len,
+                    "generated_len": req.num_generated,
+                    "block_ids": b_ids,
+                })
+
+        blocks_info = []
+        if self._kv_cache:
+            for b_id in range(num_blocks):
+                blk = self._kv_cache.allocator.blocks[b_id]
+                is_free = blk.is_free
+                state_str = "free" if is_free else ("locked" if b_id in active_write_blocks else "allocated")
+                blocks_info.append({
+                    "id": b_id,
+                    "state": state_str,
+                    "ref_count": blk.ref_count,
+                    "num_filled": blk.num_filled,
+                    "request_id": req_block_map.get(b_id),
+                })
+
+        stats = self._scheduler.stats if self._scheduler else None
+        waiting_reqs = []
+        if self._scheduler and hasattr(self._scheduler, "_queue"):
+            try:
+                waiting_reqs = [
+                    {
+                        "id": r.request_id,
+                        "prompt_len": r.prompt_len,
+                        "priority": r.priority,
+                    }
+                    for r in self._scheduler._queue
+                ]
+            except Exception:
+                pass
+
+        return {
+            "memory": {
+                "total_blocks": num_blocks,
+                "free_blocks": num_free,
+                "used_blocks": num_used,
+                "utilization": utilization,
+                "blocks": blocks_info,
+            },
+            "scheduler": {
+                "num_running": self._scheduler.num_running if self._scheduler else 0,
+                "num_waiting": self._scheduler.num_waiting if self._scheduler else 0,
+                "steps": stats.total_steps if stats else 0,
+                "preemptions": stats.preemptions if stats else 0,
+                "running": running_reqs,
+                "waiting": waiting_reqs,
+            },
+            "metrics": {
+                "requests_total": stats.total_requests if stats else 0,
+                "tokens_generated": self._tokens_generated,
+                "avg_ttft_ms": stats.avg_ttft_ms if stats else None,
+                "avg_latency_ms": stats.avg_latency_ms if stats else None,
+                "uptime_s": round(time.monotonic() - self._start_time, 1) if self._running else 0.0,
+            },
+        }
+
+
     # ── Internal: request submission ────────────────────────────────────
 
     def _submit_request(self, request: GenerateRequest) -> str:

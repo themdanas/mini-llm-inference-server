@@ -113,3 +113,16 @@ async def metrics(engine=Depends(get_engine)):
     active/waiting requests, token throughput, TTFT, latency, KV cache usage.
     """
     return engine.metrics()
+
+
+@router.get(
+    "/api/state",
+    summary="Engine and memory state snapshot",
+    description="Returns live Paged KV Cache block allocation and continuous batching scheduler state.",
+)
+async def state(engine=Depends(get_engine)):
+    """
+    Returns live memory (allocated/free/locked blocks) and scheduler queue telemetry.
+    """
+    return engine.state()
+
