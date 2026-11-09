@@ -2,7 +2,7 @@ from __future__ import annotations
 import torch
 import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from model.config import ModelConfig
 from model.transformer import Transformer
 
@@ -28,10 +28,17 @@ HF_LLAMA_LAYER_MAP = {
     "model.layers.{i}.mlp.down_proj.weight":            "blocks.{i}.ffn.w_down.weight",
 }
 
+# Buffers sometimes serialized in HF checkpoints that we compute dynamically
+HF_IGNORED_SUFFIXES = (
+    "rotary_emb.inv_freq",
+    "self_attn.rotary_emb.cos_cached",
+    "self_attn.rotary_emb.sin_cached",
+)
 
 def remap_hf_llama_keys(
     state_dict: Dict[str, torch.Tensor],
     n_layers: int,
+    tie_weights: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     Remap HuggingFace LLaMA weight keys to our naming convention.
@@ -56,6 +63,11 @@ def remap_hf_llama_keys(
                 new_sd[our_key] = state_dict[hf_key]
                 used.add(hf_key)
 
+    if "lm_head.weight" not in new_sd and "embedding.embedding.weight" in new_sd:
+        if tie_weights:
+            new_sd["lm_head.weight"] = new_sd["embedding.embedding.weight"]
+            print("[weights.py] Auto-populated lm_head.weight from tied embedding")
+
     # Warn about any unmapped keys
     for key in state_dict:
         if key not in used:
@@ -63,6 +75,57 @@ def remap_hf_llama_keys(
 
     return new_sd
 
+def load_directory(directory: str | Path) -> Dict[str, torch.Tensor]:
+    """
+    Load weights from a local directory.
+    Supports both single-file checkpoints (model.safetensors / pytorch_model.bin)
+    and multi-file sharded checkpoints (*index.json).
+    """
+    directory = Path(directory)
+
+    # 1. Check for single-file safetensors or bin first (common for <4B models)
+    single_st = directory / "model.safetensors"
+    if single_st.exists():
+        print(f"[weights.py] Loading single safetensors: {single_st.name}")
+        return load_safetensors(single_st)
+
+    single_bin = directory / "pytorch_model.bin"
+    if single_bin.exists():
+        print(f"[weights.py] Loading single PyTorch bin: {single_bin.name}")
+        return load_pytorch_bin(single_bin)
+
+    # 2. Check for sharded index files
+    merged: Dict[str, torch.Tensor] = {}
+    for index_file in ["model.safetensors.index.json", "pytorch_model.bin.index.json"]:
+        index_path = directory / index_file
+        if index_path.exists():
+            with open(index_path) as f:
+                index = json.load(f)
+
+            shard_files = sorted(set(index["weight_map"].values()))
+            for shard_file in shard_files:
+                shard_path = directory / shard_file
+                print(f"[weights.py] Loading shard: {shard_file}")
+                if shard_file.endswith(".safetensors"):
+                    shard = load_safetensors(shard_path)
+                else:
+                    shard = load_pytorch_bin(shard_path)
+                merged.update(shard)
+            return merged
+
+    # 3. Fallback: any single .safetensors file in directory
+    st_files = list(directory.glob("*.safetensors"))
+    if len(st_files) == 1:
+        return load_safetensors(st_files[0])
+
+    raise FileNotFoundError(
+        f"No valid checkpoint files found in {directory}. "
+        "Expected model.safetensors, pytorch_model.bin, or *index.json"
+    )
+
+
+# Backward compatibility alias if tests import load_sharded directly
+load_sharded = load_directory
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Loaders
@@ -183,7 +246,11 @@ def load_weights(
     # ── Remap keys if needed ──────────────────────────────────────────────
     if key_format == "hf_llama":
         print("[weights.py] Remapping HuggingFace LLaMA keys")
-        state_dict = remap_hf_llama_keys(state_dict, model.config.n_layers)
+        state_dict = remap_hf_llama_keys(
+            state_dict,
+            n_layers=model.config.n_layers,
+            tie_weights=getattr(model.config, "tie_weights", False),
+        )    
     elif key_format != "native":
         raise ValueError(f"Unknown key_format: {key_format!r}. "
                          f"Use 'native' or 'hf_llama'.")
@@ -203,8 +270,11 @@ def load_weights(
     # ── Re-apply weight tying after load ──────────────────────────────────
     # Loading a state dict can break weight tying if both keys are present
     # as separate tensors.  Re-tie explicitly to be safe.
-    if model.config.tie_weights:
-        model.lm_head.weight = model.embedding.weight
+    if getattr(model.config, "tie_weights", False):
+        if hasattr(model.embedding, "embedding"):
+            model.lm_head.weight = model.embedding.embedding.weight
+        else:
+            model.lm_head.weight = model.embedding.weight
         print("[weights.py] Weight tying applied (lm_head ← embedding)")
 
     # ── Move to device ────────────────────────────────────────────────────
@@ -217,6 +287,78 @@ def load_weights(
 
     return model
 
+def config_from_hf_json(config_path: str | Path, max_seq_len_override: Optional[int] = None) -> ModelConfig:
+    """
+    Parse a HuggingFace config.json file (LLaMA / SmolLM2 / Mistral / Qwen2)
+    into our native ModelConfig dataclass.
+    """
+    with open(config_path, "r", encoding="utf-8") as f:
+        hf_cfg = json.load(f)
+
+    max_seq_len = max_seq_len_override or min(hf_cfg.get("max_position_embeddings", 2048), 2048)
+
+    return ModelConfig(
+        vocab_size=hf_cfg["vocab_size"],
+        d_model=hf_cfg["hidden_size"],
+        n_layers=hf_cfg["num_hidden_layers"],
+        n_heads=hf_cfg["num_attention_heads"],
+        n_kv_heads=hf_cfg.get("num_key_value_heads", hf_cfg["num_attention_heads"]),
+        d_ff=hf_cfg["intermediate_size"],
+        max_seq_len=max_seq_len,
+        rope_theta=float(hf_cfg.get("rope_theta", 10000.0)),
+        norm_eps=float(hf_cfg.get("rms_norm_eps", 1e-5)),
+        tie_weights=bool(hf_cfg.get("tie_word_embeddings", False)),
+        activation="swiglu",
+    )
+
+def load_from_hf(
+    repo_id_or_path: str,
+    device: str | torch.device = "cpu",
+    dtype: Optional[torch.dtype] = torch.float16,
+    max_seq_len: int = 2048,
+) -> Tuple[Transformer, Path]:
+    """
+    Download (if needed) and load a real HuggingFace LLaMA-architecture model
+    (e.g. 'HuggingFaceTB/SmolLM2-135M-Instruct' or 'TinyLlama/TinyLlama-1.1B-Chat-v1.0').
+
+    Returns:
+        (model, local_dir_path)
+    """
+    local_path = Path(repo_id_or_path)
+    if not local_path.exists():
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError:
+            raise ImportError("Run: pip install huggingface_hub")
+        print(f"[weights.py] Downloading {repo_id_or_path} from HuggingFace Hub...")
+        local_dir = Path(
+            snapshot_download(
+                repo_id=repo_id_or_path,
+                allow_patterns=["*.json", "*.safetensors", "tokenizer.model", "*.txt"],
+            )
+        )
+    else:
+        local_dir = local_path
+
+    config = config_from_hf_json(local_dir / "config.json", max_seq_len_override=max_seq_len)
+    print(f"[weights.py] Parsed HF Config: {config}")
+
+    # Initialize model on CPU/meta and load weights
+    if str(device) == "cpu" and dtype == torch.float16:
+        # float32 or bfloat16 is safer/faster on CPU than fp16
+        dtype = torch.float32
+
+    model = Transformer(config)
+    load_weights(
+        model,
+        path=local_dir,
+        key_format="hf_llama",
+        dtype=dtype,
+        device=torch.device(device),
+        strict=True,
+    )
+    model.eval()
+    return model, local_dir
 
 def save_weights(model: Transformer, path: str | Path) -> None:
     """

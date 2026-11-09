@@ -53,11 +53,12 @@ def apply_rope(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     
     #applying rope to query and key 
-    cos_pos = cos[position_ids]
-    sin_pos = sin[position_ids]
+    # cos_pos = cos[position_ids]
+    # sin_pos = sin[position_ids]
 
-    cos_pos = cos_pos.unsqueeze(1)
-    sin_pos = sin_pos.unsqueeze(1)
+    # Cast cos/sin to match q.dtype so fp16/bf16 tensors are not upcast to fp32
+    cos_pos = cos[position_ids].unsqueeze(1).to(dtype=q.dtype, device=q.device)
+    sin_pos = sin[position_ids].unsqueeze(1).to(dtype=q.dtype, device=q.device) 
 
     #applying the rotation 
     q_rot = q * cos_pos + rotate_half(q) * sin_pos
@@ -75,6 +76,7 @@ class KVCache:
         max_seq_len: int,
         dtype: torch.dtype = torch.float32,
         device: Optional[torch.device] = None,
+        batch_size: int = 1,        
     ):
         self.n_kv_head = n_kv_heads
         self.d_head = d_head
@@ -82,13 +84,13 @@ class KVCache:
         self._len = 0
 
         self.k_cache = torch.zeros(
-            1, n_kv_heads, max_seq_len, d_head,
+            batch_size, n_kv_heads, max_seq_len, d_head,
             dtype=dtype,
             device=device,
         )
 
         self.v_cache = torch.zeros(
-            1, n_kv_heads, max_seq_len, d_head,
+            batch_size, n_kv_heads, max_seq_len, d_head,
             dtype=dtype,
             device=device,
         )
@@ -99,7 +101,7 @@ class KVCache:
         v_new: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        T_new = k_new.shape[2]
+        B_new, _, T_new, _ = k_new.shape
         end = self._len + T_new
 
         if end > self.max_seq_len:
@@ -107,15 +109,19 @@ class KVCache:
                 f"KV cache overflow: tried to store {end} tokens "
                 f"but max_seq_len={self.max_seq_len}"
             )
+        
+        if B_new > self.k_cache.shape[0]:
+            self.k_cache = self.k_cache.expand(B_new, -1, -1, -1).contiguous()
+            self.v_cache = self.v_cache.expand(B_new, -1, -1, -1).contiguous()
 
-        self.k_cache[:, :, self._len:end, :] = k_new
-        self.v_cache[:, :, self._len:end, :] = v_new
+        self.k_cache[:B_new, :, self._len:end, :] = k_new
+        self.v_cache[:B_new, :, self._len:end, :] = v_new
 
         self._len = end
 
         return (
-            self.k_cache[:, :, :self._len, :],
-            self.v_cache[:, :, :self._len, :],
+            self.k_cache[:B_new, :, :self._len, :],
+            self.v_cache[:B_new, :, :self._len, :],
         )
 
     @property
@@ -167,295 +173,46 @@ class MultiHeadAttention(nn.Module):
 
     def forward(
         self,
-        x,
-        cos,
-        sin,
-        positions_ids,
-        kv_cache=None,
-        attn_mask=None,
-    ):
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        positions_ids: torch.Tensor,
+        kv_cache: Optional[KVCache] = None,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         B, T, _ = x.shape
 
-        # -------------------------
-        # 1. Project Q, K, V
-        # -------------------------
-        q = self.w_q(x).view(
-            B,
-            T,
-            self.n_heads,
-            self.d_head,
-        ).transpose(1, 2)
+        q = self.w_q(x).view(B, T, self.n_heads, self.d_head).transpose(1, 2)
+        k = self.w_k(x).view(B, T, self.n_kv_heads, self.d_head).transpose(1, 2)
+        v = self.w_v(x).view(B, T, self.n_kv_heads, self.d_head).transpose(1, 2)
 
-        k = self.w_k(x).view(
-            B,
-            T,
-            self.n_kv_heads,
-            self.d_head,
-        ).transpose(1, 2)
+        q, k = apply_rope(q, k, cos, sin, positions_ids)
 
-        v = self.w_v(x).view(
-            B,
-            T,
-            self.n_kv_heads,
-            self.d_head,
-        ).transpose(1, 2)
-
-        # -------------------------
-        # 2. Apply RoPE
-        # -------------------------
-        q, k = apply_rope(
-            q,
-            k,
-            cos,
-            sin,
-            positions_ids,
-        )
-
-        # -------------------------
-        # 3. KV Cache
-        # -------------------------
         if kv_cache is not None:
             k, v = kv_cache.update(k, v)
 
-        # -------------------------
-        # 4. Grouped Query Attention
-        # -------------------------
         if self.kv_group > 1:
-            k = k.repeat_interleave(
-                self.kv_group,
-                dim=1,
-            )
+            k = k.repeat_interleave(self.kv_group, dim=1)
+            v = v.repeat_interleave(self.kv_group, dim=1)
 
-            v = v.repeat_interleave(
-                self.kv_group,
-                dim=1,
-            )
-
-        # -------------------------
-        # 5. Attention scores
-        # -------------------------
         S = k.shape[2]
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_head)
 
-        scores = torch.matmul(
-            q,
-            k.transpose(-2, -1),
-        )
-
-        scores = scores / math.sqrt(self.d_head)
-
-        # -------------------------
-        # 6. Causal mask
-        # -------------------------
         if attn_mask is not None:
             scores = scores + attn_mask
-        else:
+        elif T > 1:
             causal_mask = torch.triu(
-                torch.full(
-                    (T, S),
-                    float("-inf"),
-                    device=q.device,
-                    dtype=q.dtype,
-                ),
+                torch.full((T, S), float("-inf"), device=q.device, dtype=q.dtype),
                 diagonal=S - T + 1,
             )
-
             scores = scores + causal_mask
 
-        # -------------------------
-        # 7. Softmax
-        # -------------------------
-        weights = F.softmax(
-            scores,
-            dim=-1,
-        )
+        weights = F.softmax(scores, dim=-1)
 
-        # -------------------------
-        # 8. Dropout
-        # -------------------------
         if self.training:
             weights = self.attn_dropout(weights)
 
-        # -------------------------
-        # 9. Weighted values
-        # -------------------------
-        attn_out = torch.matmul(
-            weights,
-            v,
-        )
+        attn_out = torch.matmul(weights, v)
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B, T, self.n_heads * self.d_head)
 
-        # -------------------------
-        # 10. Merge heads
-        # -------------------------
-        attn_out = (
-            attn_out
-            .transpose(1, 2)
-            .contiguous()
-            .view(
-                B,
-                T,
-                self.n_heads * self.d_head,
-            )
-        )
-
-        # -------------------------
-        # 11. Output projection
-        # -------------------------
         return self.w_o(attn_out)
-
-"""
-class MultiHeadAttention(nn.Module):
-
-    def __init__(self, config: ModelConfig):
-            super().__init__()
-            self.n_heads = config.n_heads
-            self.n_kv_heads = config.n_kv_heads
-            self.d_head = config.d_head
-            self.d_model = config.d_model
-            self.kv_group = config.kv_group_size
-            self.dropout_p = config.dropout
-
-            #projections matrix
-            self.w_q = nn.Linear(config.d_model, config.n_heads*config.d_head, bias=False)
-
-            self.w_k = nn.Linear(config.d_model, config.n_kv_heads*config.d_head, bias=False)
-
-            self.w_v = nn.Linear(config.d_model, config.n_kv_heads*config.d_head, bias=False)
-
-            self.w_o = nn.Linear(config.n_heads*config.d_head, config.d_model, bias=False)
-
-            self.attn_dropout = nn.Dropout(config.dropout)
-
-    def forward(
-                self,
-                x: torch.Tensor,
-                cos: torch.Tensor,
-                sin: torch.Tensor,
-                positions_ids: torch.Tensor,
-                kv_cache: Optional[KVCache] = None,
-                attn_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-
-                B, T, _ = x.shape
-
-                #Projecting input into q, k, v.
-                q = self.w_q(x).view(B, T, self.n_heads,    self.d_head).transpose(1, 2)
-                k = self.w_k(x).view(B, T, self.n_kv_heads, self.d_head).transpose(1, 2)
-                v = self.w_v(x).view(B, T, self.n_kv_heads, self.d_head).transpose(1, 2)
-                    # q: (B, H,  T, D)
-                    # k: (B, Hk, T, D)
-                    # v: (B, Hk, T, D)
-
-                #applying rope to q and k
-                q, k = apply_rope(q, k, cos, sin, positions_ids)
-
-                #updating the KV Cache 
-                if kv_cache is not None:
-                        k, v = kv_cache.update(k, v)
-
-                # GQA: expand K/V to match Q head count 
-                # If n_kv_heads < n_heads, each K/V head is repeated kv_group times.
-                    # torch.repeat_interleave on dim=1 duplicates heads contiguously.
-                if self.kv_group > 1:
-                        k = k.repeat_interleave(self.kv_group, dim=1)
-                        v = v.repeat_interleave(self.kv_group, dim=1)
-
-                #scaled dot product attention
-                # pytorch 2.0 has fused SDPA that automattically chose Flashattention when available 
-                # attn scores = Q @ K^T / sqrt(D)
-                        # Attention
-                S = k.shape[2]
-
-                causal_mask = torch.triu(
-                    torch.full(
-                        (T, S),
-                        float("-inf"),
-                        device=q.device,
-                        dtype=q.dtype,
-                    ),
-                    diagonal=S - T + 1,
-                )
-
-                if attn_mask is not None:
-                    causal_mask = causal_mask + attn_mask
-
-                scores = torch.matmul(
-                    q,
-                    k.transpose(-2, -1),
-                ) / math.sqrt(self.d_head)
-
-                scores = scores + causal_mask
-
-                weights = F.softmax(scores, dim=-1)
-
-                if self.training:
-                    weights = self.attn_dropout(weights)
-
-                attn_out = torch.matmul(weights, v)
-
-                
-                #for test calculation of attention scores, 
-                # we are using the manual implementation of attention, 
-                # but in production we will use the fused implementation of attention.
-
-
-                if hasattr(F, "scaled_dot_product_attention"):
-                        #using pytorch 2.0 fused kernal flashattention. on cuda
-                        is_causal = attn_mask is None
-                        print("T:", T)
-                        print("attn_mask:", attn_mask)
-                        print("is_causal:", is_causal)
-                        attn_out = F.scaled_dot_product_attention(
-                            q, k, v,
-                            attn_mask=attn_mask,
-                            dropout_p=self.dropout_p if self.training else 0.0,
-                            is_causal=is_causal
-                        )
-                else:
-                        #manual fallback for older pytoch versions 
-                        attn_out = self._manual_attention(q, k, v, attn_mask, T)
-
-                        #attn_out (B, H, T, D)
-
-                #merging heads and project
-                #concentrating all head outputs along the feature dimentions 
-                #contigious ensures that memory layout is correct for the linear layer
-
-                attn_out = attn_out.transpose(1,2).contiguous().view(B, T, self.n_heads * self.d_head)
-                #attn_out (B, T, d_model)
-                
-                return self.w_o(attn_out)
-
-                
-
-
-    def _manual_attention(
-                  self,
-                  q: torch.Tensor,
-                  k: torch.Tensor,
-                  v: torch.Tensor,
-                  attn_mask: Optional[torch.Tensor],
-                  T: int
-    ) -> torch.Tensor:
-            S = k.shape[2]
-            scale = 1.0/ math.sqrt(self.d_head)
-
-            scores = torch.matmul(q, k.transpose(-2, -1)) * scale
-
-            if attn_mask is not None:
-                    scores = scores + attn_mask
-
-            else:
-                    causal = torch.triu(
-                    torch.full((T, S), float("-inf"), device=q.device, dtype=q.dtype),
-                    diagonal=S - T + 1,   # offset accounts for KV cache
-                )
-
-                    scores = scores + causal
-
-            weights = F.softmax(scores, dim=-1)
-            weights = self.attn_dropout(weights)
-
-
-            return torch.matmul(weights, v)
-
-"""

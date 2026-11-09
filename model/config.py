@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Optional
+from pathlib import Path
 import json
 import math
 
@@ -34,7 +35,9 @@ class ModelConfig:
     tie_weights : bool = True
 
     #RMSnorm
-    norm_eps : float = 1e-5 
+    norm_eps : float = 1e-5
+    rope_theta: float = 10000.0
+
 
     def __post_init__(self):
         #derived dimenstions validations 
@@ -109,6 +112,64 @@ class ModelConfig:
             n_layers=6,
             d_ff=2048,
             max_seq_len=2048,
+        )
+
+    @classmethod
+    def smollm2_135m(cls, max_seq_len: int = 2048) -> "ModelConfig":
+        """HuggingFaceTB/SmolLM2-135M-Instruct (135M real pretrained GQA model)."""
+        return cls(
+            vocab_size=49152,
+            bos_token_id=1,
+            eos_token_id=2,
+            pad_token_id=2,
+            d_model=576,
+            n_heads=9,
+            n_kv_heads=3,
+            n_layers=30,
+            d_ff=1536,
+            max_seq_len=max_seq_len,
+            norm_eps=1e-5,
+            rope_theta=100000.0,
+            tie_weights=True,
+            activation="swiglu",
+        )
+
+    @classmethod
+    def from_hf_json(
+        cls,
+        path: str | Path,
+        max_seq_len_override: Optional[int] = 2048,
+    ) -> "ModelConfig":
+        """Parse a HuggingFace config.json file into a ModelConfig instance."""
+        with open(path, "r", encoding="utf-8") as f:
+            hf = json.load(f)
+
+        raw_max_seq = hf.get("max_position_embeddings", 2048)
+        max_seq_len = min(raw_max_seq, max_seq_len_override) if max_seq_len_override else raw_max_seq
+
+        bos_id = hf.get("bos_token_id", 1)
+        eos_id = hf.get("eos_token_id", 2)
+        if isinstance(eos_id, list):
+            eos_id = eos_id[0]
+        pad_id = hf.get("pad_token_id")
+        if pad_id is None:
+            pad_id = eos_id
+
+        return cls(
+            vocab_size=hf["vocab_size"],
+            pad_token_id=int(pad_id),
+            bos_token_id=int(bos_id),
+            eos_token_id=int(eos_id),
+            d_model=hf["hidden_size"],
+            n_heads=hf["num_attention_heads"],
+            n_kv_heads=hf.get("num_key_value_heads", hf["num_attention_heads"]),
+            n_layers=hf["num_hidden_layers"],
+            d_ff=hf["intermediate_size"],
+            max_seq_len=max_seq_len,
+            norm_eps=float(hf.get("rms_norm_eps", 1e-5)),
+            rope_theta=float(hf.get("rope_theta", 10000.0)),
+            tie_weights=bool(hf.get("tie_word_embeddings", False)),
+            activation="swiglu",
         )
 
     @classmethod

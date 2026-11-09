@@ -23,7 +23,7 @@ class TransformerBlock(nn.Module):
 
         self.ffn_norm = RMSNorm(config.d_model, eps=config.norm_eps)
 
-        self.fnn = build_ffn(config)
+        self.ffn = build_ffn(config)
 
     def forward(
             self,
@@ -46,7 +46,7 @@ class TransformerBlock(nn.Module):
         #ffn -sub layer
         residuals = x
         x = self.ffn_norm(x)
-        x = self.fnn(x)
+        x = self.ffn(x)
         x = residuals + x
 
         return x
@@ -82,7 +82,8 @@ class Transformer(nn.Module):
         #compute once at init and registers as non-param buffer 
         cos, sin = precompute_rope_freq(
             d_head=config.d_head,
-            max_seq_len=config.max_seq_len
+            max_seq_len=config.max_seq_len,
+            base=getattr(config, "rope_theta", 10_000.0), 
         )
 
         self.register_buffer("rope_cos",cos, persistent=False)
@@ -107,10 +108,10 @@ class Transformer(nn.Module):
         scale = (self.config.n_layers ** -0.5)
         for block in self.blocks:
             nn.init.normal_(block.attn.w_o.weight, mean=0.0,std =0.02 *scale)
-            if hasattr(block.fnn, 'w_down'):
-                nn.init.normal_(block.fnn.w_down.weight, mean=0.0, std=0.02 * scale)
-            elif hasattr(block.fnn, 'w2'):
-                nn.init.normal_(block.fnn.w2.weight, mean=0.0, std=0.02 * scale)
+            if hasattr(block.ffn, 'w_down'):
+                nn.init.normal_(block.ffn.w_down.weight, mean=0.0, std=0.02 * scale)
+            elif hasattr(block.ffn, 'w2'):
+                nn.init.normal_(block.ffn.w2.weight, mean=0.0, std=0.02 * scale)
 
 
     #kv cache management
@@ -168,22 +169,6 @@ class Transformer(nn.Module):
 
         x = self.embedding(token_ids)
 
-        if token_ids.numel() > 0:
-            min_id = token_ids.min().item()
-            max_id = token_ids.max().item()
-            vocab_size = self.embedding.embedding.num_embeddings
-
-            if min_id < 0 or max_id >= vocab_size:
-                print(
-                    "[INVALID TOKEN IDS]",
-                    f"shape={tuple(token_ids.shape)}",
-                    f"min={min_id}",
-                    f"max={max_id}",
-                    f"vocab_size={vocab_size}",
-                    f"token_ids={token_ids.tolist()}",
-                    flush=True,
-                )
-
         attn_mask = None
 
         for i, block in enumerate(self.blocks):
@@ -214,10 +199,11 @@ class Transformer(nn.Module):
 
         self.eval()
         device = prompt_ids.device
+        B = prompt_ids.shape[0] if prompt_ids.dim() > 1 else 1
         generated = prompt_ids.clone()
 
         # allocate KV Cache for this generation
-        kv_caches = self.build_kv_cache(batch_size=1, device=device)
+        kv_caches = self.build_kv_cache(batch_size=B, device=device)
 
         #prefill : process the entire prompt in one pass
         logits = self.forward(generated, kv_caches=kv_caches)
@@ -225,32 +211,23 @@ class Transformer(nn.Module):
         next_logits = logits[:, -1, :]
 
         for _ in range(max_new_tokens):
-            #applying temprature
-
-            if temprature !=0:
-                next_logits = next_logits/temprature
-
-            #top-k filtering 
-            if top_k is not None:
-                v, _ = torch.topk(next_logits, min(top_k, next_logits.size(-1)))
-                next_logits[next_logits < v[:, [-1]]] = float("-inf")
-
-            #sample (or greedy if temprature is very low)
-            probs = torch.softmax(next_logits, dim=-1)
             if temprature < 1e-6:
                 next_token = next_logits.argmax(dim=-1, keepdim=True)
             else:
+                scaled_logits = next_logits / temprature
+                if top_k is not None:
+                    v, _ = torch.topk(scaled_logits, min(top_k, scaled_logits.size(-1)))
+                    scaled_logits[scaled_logits < v[:, [-1]]] = float("-inf")
+                probs = torch.softmax(scaled_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
-            #next token (1,1)
 
             generated = torch.cat([generated, next_token], dim=1)
 
-            #checking for EOS
-            if eos_token_id is not None and next_token.item() == eos_token_id:
+            if eos_token_id is not None and (next_token == eos_token_id).all():
                 break
 
             logits = self.forward(next_token, kv_caches=kv_caches)
-            next_logits = logits[:,-1,:]
+            next_logits = logits[:, -1, :]
 
         return generated
 
