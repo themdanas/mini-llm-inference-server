@@ -532,6 +532,62 @@ class TestPagedEquivalence:
                 assert torch.allclose(V[0, :, p, :], all_v[p], atol=1e-5), \
                     f"Decode step {step}: token {p} V mismatch"
 
+    def test_batched_decode_paged_view_equivalence(self):
+        """
+        Test BatchedDecodePagedView and make_batched_decode_views:
+        Verify that batched KV gather and attention mask correctly handle
+        sequences of different lengths.
+        """
+        torch.manual_seed(42)
+        cache = PagedKVCache(
+            num_blocks=32, block_size=4,
+            n_layers=1, n_kv_heads=N_KV_HEADS, d_head=D_HEAD,
+            dtype=torch.float32,
+        )
+        bt0 = cache.create_block_table(seq_id=0)
+        bt0.allocate_for_prompt(5)
+        bt1 = cache.create_block_table(seq_id=1)
+        bt1.allocate_for_prompt(9)
+
+        k0 = torch.randn(1, N_KV_HEADS, 5, D_HEAD)
+        v0 = torch.randn(1, N_KV_HEADS, 5, D_HEAD)
+        cache.write_prompt(bt0, layer_idx=0, k_all=k0, v_all=v0)
+
+        k1 = torch.randn(1, N_KV_HEADS, 9, D_HEAD)
+        v1 = torch.randn(1, N_KV_HEADS, 9, D_HEAD)
+        cache.write_prompt(bt1, layer_idx=0, k_all=k1, v_all=v1)
+
+        # Decode step: allocate 1 next token for each
+        bt0.allocate_next_token()
+        bt1.allocate_next_token()
+
+        write_positions = [bt0.num_tokens - 1, bt1.num_tokens - 1]
+        views, mask = cache.make_batched_decode_views([bt0, bt1], write_positions)
+
+        # Expected mask: (2, 1, 1, 10). Seq 0 len=6, Seq 1 len=10
+        assert mask.shape == (2, 1, 1, 10)
+        assert (mask[0, 0, 0, :6] == 0.0).all()
+        assert (mask[0, 0, 0, 6:] == float("-inf")).all()
+        assert (mask[1, 0, 0, :] == 0.0).all()
+
+        k_new = torch.randn(2, N_KV_HEADS, 1, D_HEAD)
+        v_new = torch.randn(2, N_KV_HEADS, 1, D_HEAD)
+
+        k_batch, v_batch = views[0].update(k_new, v_new)
+        assert k_batch.shape == (2, N_KV_HEADS, 10, D_HEAD)
+        assert v_batch.shape == (2, N_KV_HEADS, 10, D_HEAD)
+
+        # Verify seq 0: first 5 tokens from k0, 6th token from k_new[0]
+        assert torch.allclose(k_batch[0, :, :5, :], k0[0], atol=1e-5)
+        assert torch.allclose(k_batch[0, :, 5, :], k_new[0, :, 0, :], atol=1e-5)
+        # Verify padded positions in seq 0 are zero
+        assert (k_batch[0, :, 6:, :] == 0.0).all()
+
+        # Verify seq 1: first 9 tokens from k1, 10th token from k_new[1]
+        assert torch.allclose(k_batch[1, :, :9, :], k1[0], atol=1e-5)
+        assert torch.allclose(k_batch[1, :, 9, :], k_new[1, :, 0, :], atol=1e-5)
+
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

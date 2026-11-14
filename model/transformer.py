@@ -28,8 +28,8 @@ class TransformerBlock(nn.Module):
     def forward(
             self,
             x: torch.Tensor,
-            sin: torch.Tensor,
             cos: torch.Tensor,
+            sin: torch.Tensor,
             positional_ids: torch.Tensor,
             kv_cache: Optional[KVCache] = None,
             attn_mask: Optional[torch.Tensor] = None,

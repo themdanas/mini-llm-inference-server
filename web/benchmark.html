@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>NanoInfer Benchmark · HuggingFace vs NanoInfer</title>
+  <meta name="description" content="Side-by-side empirical benchmark comparing Naive HuggingFace model.generate() against NanoInfer Continuous Batching and Paged KV Cache.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+
+<style>
+/* ── Layout: sticky header, metric selector, animated race chart + table ── */
+:root {
+  --bg:        #f7f8fa;
+  --surface:   #ffffff;
+  --border:    #e3e6ed;
+  --fg:        #12141a;
+  --fg2:       #5a607a;
+  --hf-hue:    #e05a3a;
+  --ni-hue:    #2563eb;
+  --hf-soft:   #fce9e4;
+  --ni-soft:   #dbeafe;
+  --good:      #16a34a;
+  --good-soft: #dcfce7;
+  --warn:      #d97706;
+  --r:         8px;
+  --mono: 'JetBrains Mono', monospace;
+  --sans: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #0d0f14;
+    --surface:   #161b27;
+    --border:    #252c3d;
+    --fg:        #e8ecf5;
+    --fg2:       #7a85a3;
+    --hf-soft:   #2d1810;
+    --ni-soft:   #0f2044;
+    --good-soft: #0f2a1a;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #0d0f14;
+  --surface:   #161b27;
+  --border:    #252c3d;
+  --fg:        #e8ecf5;
+  --fg2:       #7a85a3;
+  --hf-soft:   #2d1810;
+  --ni-soft:   #0f2044;
+  --good-soft: #0f2a1a;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 32px;
+  max-width: 1100px;
+  margin: 0 auto;
+  transition: background-color .2s ease, color .2s ease;
+}
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-block: 20px;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+.header-left { display: flex; flex-direction: column; gap: 4px; }
+.header-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -.3px;
+  line-height: 1.2;
+}
+.header-sub { font-size: 12.5px; color: var(--fg2); letter-spacing: .02em; }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.theme-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 6px 14px;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg);
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  white-space: nowrap;
+  transition: all .15s ease;
+  text-decoration: none;
+}
+.theme-btn:hover { border-color: var(--ni-hue); color: var(--ni-hue); }
+
+/* ── Engine legend pills ── */
+.legend {
+  display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px;
+}
+.pill {
+  display: flex; align-items: center; gap: 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.pill-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.hf-dot { background: var(--hf-hue); }
+.ni-dot { background: var(--ni-hue); }
+
+/* ── Concurrency selector ── */
+.selector-row {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.selector-label { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--fg2); }
+.c-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 18px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg2);
+  cursor: pointer;
+  transition: all .15s;
+}
+.c-btn:hover { border-color: var(--ni-hue); color: var(--fg); }
+.c-btn.active {
+  background: var(--ni-hue);
+  border-color: var(--ni-hue);
+  color: #fff;
+}
+
+/* ── KPI strip ── */
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 28px;
+}
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 6px;
+  transition: background-color .2s ease, border-color .2s ease;
+}
+.kpi-label { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--fg2); }
+.kpi-value {
+  font-size: 22px;
+  font-weight: 700;
+  font-family: var(--mono);
+  letter-spacing: -.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.kpi-sub { font-size: 11px; color: var(--fg2); }
+.kpi.win { border-left: 3px solid var(--good); }
+.kpi-delta {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: var(--good-soft);
+  color: var(--good);
+  font-size: 11px; font-weight: 700;
+  padding: 2px 6px; border-radius: 4px;
+  margin-top: 2px; align-self: flex-start;
+}
+
+/* ── Race chart ── */
+.race-section { margin-bottom: 28px; }
+.section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--fg2);
+  margin-bottom: 14px;
+}
+.race-chart {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 20px;
+  display: flex; flex-direction: column; gap: 18px;
+  transition: background-color .2s ease, border-color .2s ease;
+}
+.race-metric { display: flex; flex-direction: column; gap: 6px; }
+.race-header {
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.race-name { font-size: 12.5px; font-weight: 600; }
+.race-note { font-size: 11px; color: var(--fg2); font-family: var(--mono); }
+.race-bars { display: flex; flex-direction: column; gap: 5px; }
+.bar-row { display: flex; align-items: center; gap: 10px; }
+.bar-engine { font-size: 10px; font-weight: 700; letter-spacing: .05em; width: 24px; flex-shrink: 0; }
+.bar-track {
+  flex: 1; height: 20px; background: var(--border);
+  border-radius: 3px; overflow: hidden; min-width: 0;
+  position: relative;
+}
+.bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 8px;
+  font-size: 10px; font-weight: 700; font-family: var(--mono);
+  color: #fff;
+  transition: width .9s cubic-bezier(.4,0,.2,1);
+  white-space: nowrap;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.bar-fill.hf { background: var(--hf-hue); }
+.bar-fill.ni { background: var(--ni-hue); }
+.race-divider { height: 1px; background: var(--border); }
+
+/* ── Full table ── */
+.table-section { margin-bottom: 24px; }
+.table-scroll { overflow-x: auto; border-radius: var(--r); border: 1px solid var(--border); }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+thead th {
+  background: var(--surface);
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg2);
+  white-space: nowrap;
+  border-bottom: 2px solid var(--border);
+  font-family: var(--sans);
+}
+tbody td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr.ni-row { background: var(--ni-soft); }
+tbody tr.hf-row { background: var(--hf-soft); }
+.engine-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--sans);
+  font-size: 11px; font-weight: 600;
+}
+.win-cell {
+  color: var(--good);
+  font-weight: 700;
+}
+.th-num { text-align: right; }
+td.num { text-align: right; }
+.c-label {
+  display: inline-block;
+  background: var(--border);
+  color: var(--fg2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--sans);
+}
+
+@media (max-width: 600px) {
+  .kpi-value { font-size: 18px; }
+  .header-title { font-size: 16px; }
+  .kpi-strip { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="header-title">NanoInfer vs. HuggingFace — Live Benchmark</div>
+    <div class="header-sub">Paged KV Cache + Continuous Batching · Same model (SmolLM2-135M), real hardware</div>
+  </div>
+  <div class="header-actions">
+    <a href="/" class="theme-btn" title="Back to Main Dashboard">← Main Dashboard</a>
+    <button class="theme-btn" onclick="toggleTheme()" title="Toggle Theme">
+      <span id="theme-icon">☀</span> Theme
+    </button>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="pill"><span class="pill-dot hf-dot"></span> Naive HuggingFace (model.generate)</div>
+  <div class="pill"><span class="pill-dot ni-dot"></span> NanoInfer (Paged KV + Cont. Batch)</div>
+</div>
+
+<div class="selector-row">
+  <span class="selector-label">Concurrency</span>
+  <button class="c-btn" data-c="1" onclick="select(1)">C = 1</button>
+  <button class="c-btn" data-c="4" onclick="select(4)">C = 4</button>
+  <button class="c-btn active" data-c="8" onclick="select(8)">C = 8</button>
+</div>
+
+<div class="kpi-strip" id="kpi-strip"></div>
+
+<div class="race-section">
+  <div class="section-title">Latency Race — lower is better</div>
+  <div class="race-chart" id="race-chart"></div>
+</div>
+
+<div class="table-section">
+  <div class="section-title">Full Results</div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Engine</th>
+          <th>C</th>
+          <th class="th-num">Throughput<br>tok/s</th>
+          <th class="th-num">TTFT P50<br>ms</th>
+          <th class="th-num">TTFT P99<br>ms</th>
+          <th class="th-num">E2E P99<br>ms</th>
+          <th class="th-num">KV Waste</th>
+        </tr>
+      </thead>
+      <tbody id="full-table"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const DATA = {
+  1: {
+    hf: { tput: 85.8, ttftP50: 27.5,  ttftP99: 76.0,  e2eP99: 328.2,  kvWaste: 98.3 },
+    ni: { tput: 81.4, ttftP50: 50.1,  ttftP99: 59.3,  e2eP99: 319.8,  kvWaste: 25.2 },
+  },
+  4: {
+    hf: { tput: 84.0, ttftP50: 588.7, ttftP99: 600.3, e2eP99: 853.1,  kvWaste: 98.3 },
+    ni: { tput: 90.3, ttftP50: 187.5, ttftP99: 251.4, e2eP99: 1203.8, kvWaste: 25.2 },
+  },
+  8: {
+    hf: { tput: 85.2, ttftP50: 1288.7,ttftP99: 1716.8,e2eP99: 1968.1, kvWaste: 98.3 },
+    ni: { tput: 117.6,ttftP50: 342.0, ttftP99: 342.3, e2eP99: 1422.5, kvWaste: 25.2 },
+  },
+};
+
+let currentC = 8;
+
+function fmt(n, dec=1) { return n.toLocaleString('en', {minimumFractionDigits:dec, maximumFractionDigits:dec}); }
+function pct(a, b) { return Math.round(Math.abs(a-b)/Math.max(a,b)*100); }
+
+function kpiCards(c) {
+  const d = DATA[c];
+  const ttftWin = pct(d.hf.ttftP50, d.ni.ttftP50);
+  const ttftP99Win = pct(d.hf.ttftP99, d.ni.ttftP99);
+  const kvWin = pct(d.hf.kvWaste, d.ni.kvWaste);
+  const niWinsTtft = d.ni.ttftP50 < d.hf.ttftP50;
+  const tputWin = pct(d.hf.tput, d.ni.tput);
+  const niWinsTput = d.ni.tput >= d.hf.tput;
+
+  return [
+    {
+      label: 'Throughput (tok/s)',
+      hfVal: fmt(d.hf.tput), niVal: fmt(d.ni.tput),
+      win: niWinsTput ? 'NI' : 'HF',
+      delta: niWinsTput ? `+${tputWin}% higher` : `-${tputWin}%`,
+      sub: c === 8 ? 'batched decode scaling' : 'single request baseline'
+    },
+    {
+      label: 'TTFT P50 (ms)',
+      hfVal: fmt(d.hf.ttftP50), niVal: fmt(d.ni.ttftP50),
+      win: niWinsTtft ? 'NI' : 'HF',
+      delta: niWinsTtft ? `${ttftWin}% faster` : `${ttftWin}% slower`,
+      sub: 'time-to-first-token'
+    },
+    {
+      label: 'TTFT P99 (ms)',
+      hfVal: fmt(d.hf.ttftP99), niVal: fmt(d.ni.ttftP99),
+      win: d.ni.ttftP99 < d.hf.ttftP99 ? 'NI' : 'HF',
+      delta: (d.hf.ttftP99 / d.ni.ttftP99).toFixed(1) + 'x faster tail',
+      sub: 'worst-case first token'
+    },
+    {
+      label: 'KV Memory Waste',
+      hfVal: fmt(d.hf.kvWaste) + '%', niVal: fmt(d.ni.kvWaste) + '%',
+      win: 'NI', delta: kvWin + '% less waste',
+      sub: 'paged 16-tok blocks'
+    },
+  ];
+}
+
+function renderKPI(c) {
+  const cards = kpiCards(c);
+  document.getElementById('kpi-strip').innerHTML = cards.map(card => `
+    <div class="kpi ${card.win === 'NI' ? 'win' : ''}">
+      <div class="kpi-label">${card.label}</div>
+      <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <div style="font-size:10px;color:var(--fg2);margin-bottom:1px">HF</div>
+          <div class="kpi-value" style="font-size:16px;color:var(--hf-hue)">${card.hfVal}</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--fg2);margin-bottom:1px">NI</div>
+          <div class="kpi-value" style="font-size:16px;color:var(--ni-hue)">${card.niVal}</div>
+        </div>
+      </div>
+      ${card.win === 'NI' ? `<div class="kpi-delta">▲ NI wins · ${card.delta}</div>` : `<div style="font-size:11px;color:var(--fg2);margin-top:2px">HF wins · ${card.delta}</div>`}
+      <div class="kpi-sub">${card.sub}</div>
+    </div>
+  `).join('');
+}
+
+function barRow(engine, cls, val, maxVal, unit, lowerBetter) {
+  const pct = Math.min(100, Math.max(12, Math.round((val / maxVal) * 100)));
+  return `
+    <div class="bar-row">
+      <div class="bar-engine" style="color:${cls === 'hf' ? 'var(--hf-hue)' : 'var(--ni-hue)'}">${engine}</div>
+      <div class="bar-track">
+        <div class="bar-fill ${cls}" style="width:0%" data-target="${pct}" data-val="${fmt(val)} ${unit}">
+          ${fmt(val)} ${unit}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderRace(c) {
+  const d = DATA[c];
+  const metrics = [
+    {
+      name: 'TTFT P50', note: 'time to first token (median)', lowerBetter: true,
+      hf: d.hf.ttftP50, ni: d.ni.ttftP50, unit: 'ms',
+      max: Math.max(d.hf.ttftP50, d.ni.ttftP50) * 1.05
+    },
+    {
+      name: 'TTFT P99', note: 'tail latency for first token', lowerBetter: true,
+      hf: d.hf.ttftP99, ni: d.ni.ttftP99, unit: 'ms',
+      max: Math.max(d.hf.ttftP99, d.ni.ttftP99) * 1.05
+    },
+    {
+      name: 'E2E P99', note: 'full generation tail latency', lowerBetter: true,
+      hf: d.hf.e2eP99, ni: d.ni.e2eP99, unit: 'ms',
+      max: Math.max(d.hf.e2eP99, d.ni.e2eP99) * 1.05
+    },
+    {
+      name: 'KV Memory Waste', note: 'lower = better allocation', lowerBetter: true,
+      hf: d.hf.kvWaste, ni: d.ni.kvWaste, unit: '%',
+      max: Math.max(d.hf.kvWaste, d.ni.kvWaste) * 1.05
+    },
+  ];
+
+  document.getElementById('race-chart').innerHTML = metrics.map((m, i) => `
+    <div class="race-metric">
+      <div class="race-header">
+        <span class="race-name">${m.name}</span>
+        <span class="race-note">${m.note}</span>
+      </div>
+      <div class="race-bars">
+        ${barRow('HF', 'hf', m.hf, m.max, m.unit, m.lowerBetter)}
+        ${barRow('NI', 'ni', m.ni, m.max, m.unit, m.lowerBetter)}
+      </div>
+    </div>
+    ${i < metrics.length - 1 ? '<div class="race-divider"></div>' : ''}
+  `).join('');
+
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.bar-fill').forEach(el => {
+      el.style.width = el.dataset.target + '%';
+    });
+  });
+}
+
+function renderTable() {
+  const rows = [];
+  [1,4,8].forEach(c => {
+    ['hf','ni'].forEach(eng => {
+      const d = DATA[c][eng];
+      const isNi = eng === 'ni';
+      const peer = DATA[c][isNi ? 'hf' : 'ni'];
+      rows.push(`
+        <tr class="${isNi ? 'ni' : 'hf'}-row" data-c="${c}">
+          <td>
+            <div class="engine-badge">
+              <span class="pill-dot ${isNi ? 'ni' : 'hf'}-dot"></span>
+              ${isNi ? 'NanoInfer' : 'HuggingFace'}
+            </div>
+          </td>
+          <td><span class="c-label">${c}</span></td>
+          <td class="num ${isNi && d.tput >= peer.tput ? 'win-cell' : ''}">${fmt(d.tput)}</td>
+          <td class="num ${d.ttftP50 < peer.ttftP50 ? 'win-cell' : ''}">${fmt(d.ttftP50)}</td>
+          <td class="num ${d.ttftP99 < peer.ttftP99 ? 'win-cell' : ''}">${fmt(d.ttftP99)}</td>
+          <td class="num ${d.e2eP99 < peer.e2eP99 ? 'win-cell' : ''}">${fmt(d.e2eP99)}</td>
+          <td class="num ${d.kvWaste < peer.kvWaste ? 'win-cell' : ''}">${fmt(d.kvWaste)}%</td>
+        </tr>`);
+    });
+  });
+  document.getElementById('full-table').innerHTML = rows.join('');
+}
+
+function select(c) {
+  currentC = c;
+  document.querySelectorAll('.c-btn').forEach(b => b.classList.toggle('active', +b.dataset.c === c));
+  renderKPI(c);
+  renderRace(c);
+  highlightTable(c);
+}
+
+function highlightTable(c) {
+  document.querySelectorAll('#full-table tr').forEach(r => {
+    r.style.opacity = r.dataset.c == c ? '1' : '0.45';
+  });
+}
+
+function toggleTheme() {
+  const root = document.documentElement;
+  const cur = root.getAttribute('data-theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  root.setAttribute('data-theme', next);
+  try { localStorage.setItem('nanoinfer_theme', next); } catch(_) {}
+  updateThemeIcon(next);
+}
+
+function updateThemeIcon(t) {
+  const icon = document.getElementById('theme-icon');
+  if (icon) icon.textContent = t === 'dark' ? '☽' : '☀';
+}
+
+function initTheme() {
+  try {
+    const saved = localStorage.getItem('nanoinfer_theme');
+    if (saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+      updateThemeIcon(saved);
+      return;
+    }
+  } catch(_) {}
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  updateThemeIcon(isDark ? '☽' : '☀');
+}
+
+// Fetch live API data if available
+async function tryFetchComparisonApi() {
+  try {
+    const res = await fetch('/api/comparison');
+    if (res.ok) {
+      const json = await res.json();
+      if (Array.isArray(json.rows)) {
+        json.rows.forEach(r => {
+          const c = r.concurrency;
+          if (DATA[c] && r.naive_hf && r.nanoinfer) {
+            DATA[c].hf.tput = r.naive_hf.throughput;
+            DATA[c].hf.ttftP50 = r.naive_hf.ttft_p50;
+            DATA[c].hf.ttftP99 = r.naive_hf.ttft_p99;
+            DATA[c].hf.e2eP99 = r.naive_hf.e2e_p99;
+            DATA[c].hf.kvWaste = r.naive_hf.kv_waste;
+
+            DATA[c].ni.tput = r.nanoinfer.throughput;
+            DATA[c].ni.ttftP50 = r.nanoinfer.ttft_p50;
+            DATA[c].ni.ttftP99 = r.nanoinfer.ttft_p99;
+            DATA[c].ni.e2eP99 = r.nanoinfer.e2e_p99;
+            DATA[c].ni.kvWaste = r.nanoinfer.kv_waste;
+          }
+        });
+        select(currentC);
+        renderTable();
+      }
+    }
+  } catch(_) {}
+}
+
+// init
+initTheme();
+renderKPI(currentC);
+renderRace(currentC);
+renderTable();
+highlightTable(currentC);
+tryFetchComparisonApi();
+</script>
+
+</body>
+</html>
+

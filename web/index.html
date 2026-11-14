@@ -7,7 +7,7 @@
   <meta name="description" content="Minimal, high-performance LLM inference server showing the pipeline architecture alongside interactive benchmarks, streaming playground, and real-time telemetry.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="/static/style.css" onerror="this.onerror=null;this.href='style.css'">
 </head>
 <body>
@@ -33,6 +33,9 @@
     <div class="header-right">
       <div class="status-dot" id="statusDot"></div>
       <span class="status-label" id="statusLabel">offline</span>
+      <a href="/benchmark" class="theme-btn" style="text-decoration:none;display:inline-flex;align-items:center;gap:5px" title="View HuggingFace vs NanoInfer Benchmark Comparison">
+        <span>⚡</span> Benchmark vs HF ↗
+      </a>
       <button class="theme-btn" id="themeBtn" title="Toggle Light / Dark mode" onclick="cycleTheme()">◑</button>
     </div>
   </header>
@@ -53,7 +56,7 @@
       <div class="pipeline" id="pipeline"></div>
     </section>
 
-    <!-- RIGHT COLUMN: Benchmarks & Live Telemetry -->
+    <!-- RIGHT COLUMN: Benchmarks, Live Telemetry & Test Suite -->
     <section class="right-col" aria-label="Benchmarks and Live Telemetry">
 
       <!-- 1. Server Connection & Telemetry -->
@@ -121,7 +124,7 @@
         </div>
       </div>
 
-      <!-- 2. Benchmark Suite (Alongside) -->
+      <!-- 2. Benchmark Suite (Interactive Runner) -->
       <div class="card" id="benchmarkCard">
         <div class="card-header-row">
           <div class="section-label">Benchmark Suite</div>
@@ -279,7 +282,7 @@
       <div class="card" id="testCard">
         <div class="card-header-row">
           <div class="section-label">Test Suite</div>
-          <span class="badge ok">297 / 297 PASSING</span>
+          <span class="badge ok">300 / 300 PASSING</span>
         </div>
         <div id="testRows"></div>
       </div>
@@ -287,6 +290,7 @@
     </section>
   </main>
 
+  <!-- ── Footer ──────────────────────────────────────────────────────────── -->
   <footer class="footer">
     <div class="footer-left">
       <span><b>NanoInfer</b> · Minimal High-Performance LLM Inference Server</span>

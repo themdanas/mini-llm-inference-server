@@ -466,12 +466,15 @@ class InferenceEngine:
                     logger.exception("Failure in prefill for %s: %s", rid, exc)
                     self.cancel(rid, error=str(exc))
 
-            # ── 2. Handle decode sequences (using SingleSeqPagedView) ────────
-            for req in batch.decode_requests:
-                rid = req.request_id
-                if req.is_finished or req.block_table is None:
-                    continue
+            # ── 2. Handle decode sequences (Batched / Single) ────────────────
+            active_decode_reqs = [
+                r for r in batch.decode_requests
+                if not r.is_finished and r.block_table is not None
+            ]
 
+            if len(active_decode_reqs) == 1:
+                req = active_decode_reqs[0]
+                rid = req.request_id
                 try:
                     write_pos = req.block_table.num_tokens - 1
                     kv_views = self._kv_cache.make_sequence_views(
@@ -504,6 +507,82 @@ class InferenceEngine:
                 except Exception as exc:
                     logger.exception("Failure in decode for %s: %s", rid, exc)
                     self.cancel(rid, error=str(exc))
+
+            elif len(active_decode_reqs) > 1:
+                try:
+                    block_tables = [r.block_table for r in active_decode_reqs]
+                    write_positions = [
+                        r.block_table.num_tokens - 1 for r in active_decode_reqs
+                    ]
+                    last_tokens = [
+                        [r.output_token_ids[-1] if r.output_token_ids else r.prompt_token_ids[-1]]
+                        for r in active_decode_reqs
+                    ]
+                    token_ids = torch.tensor(
+                        last_tokens, dtype=torch.long, device=device
+                    )
+                    pos_ids = torch.tensor(
+                        [[p] for p in write_positions], dtype=torch.long, device=device
+                    )
+                    model_dtype = next(self._model.parameters()).dtype
+                    batched_views, attn_mask = self._kv_cache.make_batched_decode_views(
+                        block_tables, write_positions, device=device, dtype=model_dtype
+                    )
+
+                    with torch.inference_mode():
+                        logits = self._model.forward(
+                            token_ids,
+                            kv_caches=batched_views,
+                            positional_ids=pos_ids,
+                            attn_mask=attn_mask,
+                        )
+
+                    for i, req in enumerate(active_decode_reqs):
+                        rid = req.request_id
+                        seq_logits = logits[i : i + 1, -1, :]
+                        sampler = self._request_samplers.get(rid)
+                        if sampler is not None:
+                            token_id = sampler(seq_logits, req.output_token_ids).item()
+                        else:
+                            token_id = seq_logits.argmax(dim=-1).item()
+
+                        new_tokens[rid] = int(token_id)
+                except Exception as exc:
+                    logger.warning("Batched decode failed, falling back to sequential decode: %s", exc)
+                    for req in active_decode_reqs:
+                        rid = req.request_id
+                        try:
+                            write_pos = req.block_table.num_tokens - 1
+                            kv_views = self._kv_cache.make_sequence_views(
+                                req.block_table, start_pos=write_pos
+                            )
+                            last_token = (
+                                req.output_token_ids[-1]
+                                if req.output_token_ids
+                                else req.prompt_token_ids[-1]
+                            )
+                            token_ids = torch.tensor(
+                                [[last_token]], dtype=torch.long, device=device
+                            )
+                            pos_ids = torch.tensor(
+                                [[write_pos]], dtype=torch.long, device=device
+                            )
+                            with torch.inference_mode():
+                                logits = self._model.forward(
+                                    token_ids, kv_caches=kv_views, positional_ids=pos_ids
+                                )
+
+                            last_logits = logits[:, -1, :]
+                            sampler = self._request_samplers.get(rid)
+                            if sampler is not None:
+                                token_id = sampler(last_logits, req.output_token_ids).item()
+                            else:
+                                token_id = last_logits.argmax(dim=-1).item()
+
+                            new_tokens[rid] = int(token_id)
+                        except Exception as inner_exc:
+                            logger.exception("Failure in fallback decode for %s: %s", rid, inner_exc)
+                            self.cancel(rid, error=str(inner_exc))
 
             # ── 3. Update scheduler with generated tokens ────────────────────
             just_finished = self._scheduler.on_step_complete(new_tokens)

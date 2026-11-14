@@ -93,6 +93,10 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         async def serve_index():
             return FileResponse(str(web_dir / "index.html"))
 
+        @app.api_route("/benchmark", methods=["GET", "HEAD"], include_in_schema=False)
+        async def serve_benchmark():
+            return FileResponse(str(web_dir / "benchmark.html"))
+
     return app
 
 

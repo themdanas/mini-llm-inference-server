@@ -37,7 +37,7 @@ const PHASES = [
     num: "03",
     name: "Paged KV Cache",
     tag: "memory/",
-    pass: "47 / 47",
+    pass: "48 / 48",
     desc: "GPU memory split into fixed-size blocks (like virtual memory pages). Each request gets a block table — a mapping from logical token position to physical block. Enables sharing of common prefix blocks across requests (prefix caching).",
     files: ["memory/block.py", "memory/allocator.py", "memory/page_table.py"],
     concepts: [
@@ -63,7 +63,7 @@ const PHASES = [
     num: "04b",
     name: "Serving Layer",
     tag: "serving/",
-    pass: "44 / 44",
+    pass: "46 / 46",
     desc: "FastAPI app + AsyncLLMEngine. The engine runs a background asyncio loop that calls the scheduler, forwards through the model in a thread executor, and pushes TokenEvents to per-request queues. Responses stream over SSE.",
     files: ["serving/engine.py", "serving/routes.py", "serving/server.py", "serving/streaming.py", "serving/schemas.py"],
     concepts: [
@@ -90,12 +90,12 @@ const PHASES = [
 const TEST_SUMMARY = [
   { name: "Phase 01 · Model Core",           count: "43 / 43" },
   { name: "Phase 02 · Tokenizer & Sampler",   count: "66 / 66" },
-  { name: "Phase 03 · Paged KV Cache",       count: "47 / 47" },
+  { name: "Phase 03 · Paged KV Cache",       count: "48 / 48" },
   { name: "Phase 04a · Continuous Scheduler",count: "46 / 46" },
-  { name: "Phase 04b · Serving Layer",       count: "44 / 44" },
+  { name: "Phase 04b · Serving Layer",       count: "46 / 46" },
   { name: "Phase 05 · Benchmark Harness",    count: "39 / 39" },
   { name: "Integration & E2E Tests",         count: "12 / 12" },
-  { name: "Total Test Suite",                 count: "297 / 297" },
+  { name: "Total Test Suite",                 count: "300 / 300" },
 ];
 
 const BENCH_WORDS = [

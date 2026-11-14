@@ -122,14 +122,19 @@ class BatchedDecodePagedView:
                 v_new[i, :, 0, :],
             )
 
-            k_seq, v_seq = self.paged_cache.gather(
-                block_ids=bt.get_block_ids(),
-                num_tokens=s_len,
-                layer_idx=self.layer_idx,
+            block_ids = bt.get_block_ids()
+            k_seq = (
+                self.paged_cache.k_slab[self.layer_idx, block_ids]
+                .reshape(-1, self.paged_cache.n_kv_heads, self.paged_cache.d_head)[:s_len]
+                .permute(1, 0, 2)
             )
-            # Right-align (left-pad) valid KV tokens so causal/mask alignment is clean
-            k_batch[i, :, :s_len, :] = k_seq.squeeze(0).to(k_new.dtype)
-            v_batch[i, :, :s_len, :] = v_seq.squeeze(0).to(v_new.dtype)
+            v_seq = (
+                self.paged_cache.v_slab[self.layer_idx, block_ids]
+                .reshape(-1, self.paged_cache.n_kv_heads, self.paged_cache.d_head)[:s_len]
+                .permute(1, 0, 2)
+            )
+            k_batch[i, :, :s_len, :] = k_seq.to(dtype=k_new.dtype, device=k_new.device)
+            v_batch[i, :, :s_len, :] = v_seq.to(dtype=v_new.dtype, device=v_new.device)
 
         return k_batch, v_batch
 
@@ -203,21 +208,26 @@ class PagedKVCache:
         self,
         block_tables: List[BlockTable],
         write_positions: List[int],
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
     ) -> Tuple[List[BatchedDecodePagedView], torch.Tensor]:
         """
         Build per-layer batched decode KV views and an attention mask of shape (B, 1, 1, max_S)
         that masks out padding positions beyond each sequence's valid length.
         """
+        target_device = device if device is not None else self.device
+        target_dtype = dtype if dtype is not None else self.dtype
+
         views = [
             BatchedDecodePagedView(self, block_tables, write_positions, layer_idx=i)
             for i in range(self.n_layers)
         ]
         seq_lens = [pos + 1 for pos in write_positions]
-        max_s = max(seq_lens)
+        max_s = max(seq_lens) if seq_lens else 0
         B = len(seq_lens)
 
         # Build additive attention mask: 0.0 for valid positions, -inf for padded positions
-        mask = torch.zeros((B, 1, 1, max_s), dtype=self.dtype, device=self.device)
+        mask = torch.zeros((B, 1, 1, max_s), dtype=target_dtype, device=target_device)
         for i, s_len in enumerate(seq_lens):
             if s_len < max_s:
                 mask[i, 0, 0, s_len:] = float("-inf")

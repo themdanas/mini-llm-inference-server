@@ -478,7 +478,26 @@ class TestInferenceEngine:
         assert len(engine._request_kv_caches) == 0
         assert engine._kv_cache.used_blocks == 0
         assert engine._kv_cache.free_blocks == initial_free
+        await engine.shutdown()
 
+    @pytest.mark.anyio
+    async def test_concurrent_batched_decode_generation(self, tiny_config):
+        """Verify concurrent requests exercise true batched decode in the engine."""
+        engine = InferenceEngine(tiny_config)
+        await engine.start()
+
+        reqs = [
+            GenerateRequest(prompt=f"Batched prompt {i}", max_new_tokens=8)
+            for i in range(4)
+        ]
+        tasks = [asyncio.create_task(engine.generate(r)) for r in reqs]
+        results = await asyncio.gather(*tasks)
+
+        for res in results:
+            assert res.finish_reason == "max_tokens"
+            assert res.usage.completion_tokens == 8
+
+        assert engine._kv_cache.used_blocks == 0
         await engine.shutdown()
 
     @pytest.mark.anyio
@@ -623,10 +642,36 @@ class TestServingRoutesAndServer:
         assert "blocks" in body["memory"]
         assert len(body["memory"]["blocks"]) == body["memory"]["total_blocks"]
 
+    def test_comparison_endpoint(self, client):
+        resp = client.get("/api/comparison")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "model_info" in body
+        assert "headline" in body
+        assert "ttft_speedup" in body["headline"]
+        assert "memory_saved" in body["headline"]
+        assert "throughput_gain" in body["headline"]
+        assert "e2e_reduction" in body["headline"]
+        assert "rows" in body
+        assert len(body["rows"]) >= 3
+        # Check first row contains both naive_hf and nanoinfer data
+        row0 = body["rows"][0]
+        assert "concurrency" in row0
+        assert "naive_hf" in row0 and "nanoinfer" in row0
+        assert "throughput" in row0["naive_hf"]
+        assert "throughput" in row0["nanoinfer"]
+
     def test_serve_dashboard_index(self, client):
         resp = client.get("/")
         assert resp.status_code == 200
         assert "NanoInfer" in resp.text
+        assert "text/html" in resp.headers.get("content-type", "")
+
+    def test_serve_benchmark_page(self, client):
+        resp = client.get("/benchmark")
+        assert resp.status_code == 200
+        assert "NanoInfer" in resp.text
+        assert "Benchmark" in resp.text
         assert "text/html" in resp.headers.get("content-type", "")
 
     def test_serve_static_assets(self, client):

@@ -2,9 +2,9 @@
 
 | Engine | Concurrency | Throughput (tok/s) | TTFT P50 (ms) | TTFT P99 (ms) | E2E P99 (ms) | KV Memory Waste (%) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Naive HuggingFace (model.generate)** | 1 | **75.6** | 32.1 | 118.1 | 401.2 | **98.3%** |
-| **NanoInfer (Paged KV + Cont. Batch)** | 1 | **73.7** | 54.0 | 137.6 | 439.1 | **25.2%** |
-| **Naive HuggingFace (model.generate)** | 4 | **77.3** | 631.2 | 650.7 | 929.3 | **98.3%** |
-| **NanoInfer (Paged KV + Cont. Batch)** | 4 | **75.2** | 237.7 | 291.4 | 1357.3 | **25.2%** |
-| **Naive HuggingFace (model.generate)** | 8 | **76.4** | 1438.9 | 1913.2 | 2194.5 | **98.3%** |
-| **NanoInfer (Paged KV + Cont. Batch)** | 8 | **75.0** | 469.6 | 470.2 | 2616.7 | **25.2%** |
+| **Naive HuggingFace (model.generate)** | 1 | **85.8** | 27.5 | 76.0 | 328.2 | **98.3%** |
+| **NanoInfer (Paged KV + Cont. Batch)** | 1 | **81.4** | 50.1 | 59.3 | 319.8 | **25.2%** |
+| **Naive HuggingFace (model.generate)** | 4 | **84.0** | 588.7 | 600.3 | 853.1 | **98.3%** |
+| **NanoInfer (Paged KV + Cont. Batch)** | 4 | **90.3** | 187.5 | 251.4 | 1203.8 | **25.2%** |
+| **Naive HuggingFace (model.generate)** | 8 | **85.2** | 1288.7 | 1716.8 | 1968.1 | **98.3%** |
+| **NanoInfer (Paged KV + Cont. Batch)** | 8 | **117.6** | 342.0 | 342.3 | 1422.5 | **25.2%** |
