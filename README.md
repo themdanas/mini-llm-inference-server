@@ -237,14 +237,7 @@ python -m serving.server
 ```
 
 **Custom configuration options:**
-```bash
-python -m serving.server \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --device cpu \
-  --model-config tiny \
-  --num-kv-blocks 128 \
-  --block-size 16 \
+
   --max-batch-size 32
 ```
 

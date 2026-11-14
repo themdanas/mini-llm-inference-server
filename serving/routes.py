@@ -66,6 +66,15 @@ def get_engine(request: Request):
     },
     include_in_schema=False,
 )
+@router.post(
+    "/v1/completions",
+    response_model=GenerateResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+    include_in_schema=False,
+)
 async def generate(
     req: GenerateRequest,
     engine=Depends(get_engine),

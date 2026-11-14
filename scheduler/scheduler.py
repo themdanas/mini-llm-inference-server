@@ -199,14 +199,27 @@ class Scheduler:
                     self.stats.ttft_samples.append(req.ttft)
 
             req.append_token(token_id)
-            if req.block_table is not None:
-                req.block_table.allocate_next_token()
 
-            # stop check
+            # Check if sequence naturally reached EOS or max_new_tokens
             reason = req.should_stop()
             if reason is not None:
                 self._finish_request(req, reason)
                 just_finished.append(req)
+                continue
+
+            # Allocate 1 slot in block table for the upcoming decode step
+            if req.block_table is not None:
+                allocated = req.block_table.allocate_next_token()
+                if allocated is None:
+                    # OOM: BlockAllocator has 0 free blocks left.
+                    # Finish cleanly with MAX_TOKENS rather than crashing on next step.
+                    logger.warning(
+                        "KV cache full for req %s; finishing with MAX_TOKENS",
+                        req.request_id,
+                    )
+                    self._finish_request(req, FinishReason.MAX_TOKENS)
+                    just_finished.append(req)
+                    continue
 
         return just_finished
 

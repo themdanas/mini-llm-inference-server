@@ -55,6 +55,15 @@ class RequestStream:
         """Push a ``None`` sentinel to end the stream."""
         await self._queue.put(None)
 
+    def cancel(self) -> None:
+        """Cancel this stream, unblock waiting consumers, and close."""
+        self.cancelled = True
+        try:
+            self._queue.put_nowait(None)
+        except Exception:
+            pass
+        self.close()
+
     def close(self) -> None:
         """Signal that the consumer is done consuming the stream."""
         if not self._closed:
@@ -95,7 +104,7 @@ def make_sse_response(stream: RequestStream) -> EventSourceResponse:
             # final sentinel
             yield {"data": "[DONE]"}
         except asyncio.CancelledError:
-            stream.cancelled = True
+            stream.cancel()
             logger.debug("SSE stream cancelled for %s", stream.request_id)
         finally:
             stream.close()

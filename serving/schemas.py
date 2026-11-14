@@ -21,6 +21,7 @@ class GenerateRequest(BaseModel):
     """Body for ``POST /v1/generate``."""
 
     prompt: str = Field(..., min_length=1, description="Input text to generate from")
+    request_id: Optional[str] = Field(None, description="Optional client-provided request identifier")
 
     # sampling knobs
     max_new_tokens: int = Field(256, ge=1, le=8192)

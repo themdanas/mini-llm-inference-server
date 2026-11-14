@@ -162,24 +162,33 @@ def load_pytorch_bin(path: str | Path) -> Dict[str, torch.Tensor]:
 
 def load_sharded(directory: str | Path) -> Dict[str, torch.Tensor]:
     """
-    Load a model sharded across multiple safetensors files.
-    Reads the shard index (pytorch_model.bin.index.json or model.safetensors.index.json)
-    and merges all shards into a single state dict.
-
-    Used for large models (>10GB) that HF splits into multiple files.
+    Load weights from a local directory.
+    Supports both single-file checkpoints (model.safetensors / pytorch_model.bin)
+    and multi-file sharded checkpoints (*index.json).
     """
     directory = Path(directory)
-    merged: Dict[str, torch.Tensor] = {}
 
-    # Try safetensors index first, fall back to pytorch bin index
+    # 1. Check for single-file safetensors or bin first (common for <4B models)
+    single_st = directory / "model.safetensors"
+    if single_st.exists():
+        print(f"[weights.py] Loading single safetensors: {single_st.name}")
+        return load_safetensors(single_st)
+
+    single_bin = directory / "pytorch_model.bin"
+    if single_bin.exists():
+        print(f"[weights.py] Loading single PyTorch bin: {single_bin.name}")
+        return load_pytorch_bin(single_bin)
+
+    # 2. Check for sharded index files
+    merged: Dict[str, torch.Tensor] = {}
     for index_file in ["model.safetensors.index.json", "pytorch_model.bin.index.json"]:
         index_path = directory / index_file
         if index_path.exists():
             with open(index_path) as f:
                 index = json.load(f)
 
-            shard_files = set(index["weight_map"].values())
-            for shard_file in sorted(shard_files):
+            shard_files = sorted(set(index["weight_map"].values()))
+            for shard_file in shard_files:
                 shard_path = directory / shard_file
                 print(f"[weights.py] Loading shard: {shard_file}")
                 if shard_file.endswith(".safetensors"):
@@ -189,11 +198,16 @@ def load_sharded(directory: str | Path) -> Dict[str, torch.Tensor]:
                 merged.update(shard)
             return merged
 
-    raise FileNotFoundError(
-        f"No shard index found in {directory}. "
-        "Expected model.safetensors.index.json or pytorch_model.bin.index.json"
-    )
+    # 3. Fallback: any single .safetensors file in directory
+    st_files = list(directory.glob("*.safetensors"))
+    if len(st_files) == 1:
+        print(f"[weights.py] Loading safetensors: {st_files[0].name}")
+        return load_safetensors(st_files[0])
 
+    raise FileNotFoundError(
+        f"No shard index or model.safetensors found in {directory}. "
+        "Expected model.safetensors, pytorch_model.bin, or *index.json"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main load function
@@ -287,6 +301,7 @@ def load_weights(
 
     return model
 
+'''
 def config_from_hf_json(config_path: str | Path, max_seq_len_override: Optional[int] = None) -> ModelConfig:
     """
     Parse a HuggingFace config.json file (LLaMA / SmolLM2 / Mistral / Qwen2)
@@ -310,6 +325,7 @@ def config_from_hf_json(config_path: str | Path, max_seq_len_override: Optional[
         tie_weights=bool(hf_cfg.get("tie_word_embeddings", False)),
         activation="swiglu",
     )
+'''
 
 def load_from_hf(
     repo_id_or_path: str,
@@ -340,7 +356,7 @@ def load_from_hf(
     else:
         local_dir = local_path
 
-    config = config_from_hf_json(local_dir / "config.json", max_seq_len_override=max_seq_len)
+    config = ModelConfig.from_hf_json(local_dir / "config.json", max_seq_len_override=max_seq_len)
     print(f"[weights.py] Parsed HF Config: {config}")
 
     # Initialize model on CPU/meta and load weights

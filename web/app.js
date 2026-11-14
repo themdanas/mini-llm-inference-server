@@ -121,11 +121,14 @@ let playgroundAbortCtrl = null;
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 function getBaseUrl() {
-  const inputVal = document.getElementById("serverUrl").value.trim();
-  if (inputVal) return inputVal.replace(/\/$/, "");
-  if (window.location.protocol.startsWith("http")) {
-    return window.location.origin;
+  const inputEl = document.getElementById("serverUrl");
+  const inputVal = inputEl ? inputEl.value.trim() : "";
+  if (typeof window !== "undefined" && window.location && window.location.protocol.startsWith("http")) {
+    if (!inputVal || inputVal === "http://localhost:8000" || inputVal === "http://127.0.0.1:8000") {
+      return window.location.origin;
+    }
   }
+  if (inputVal) return inputVal.replace(/\/$/, "");
   return "http://localhost:8000";
 }
 
@@ -230,6 +233,10 @@ function initKvGrid(total = 128) {
 }
 
 function updateKvGrid(blocksData, total = 128, free = 128) {
+  const grid = document.getElementById("kvGrid");
+  if (grid && (!document.getElementById("kv-b-" + (total - 1)) || grid.children.length !== total)) {
+    initKvGrid(total);
+  }
   if (Array.isArray(blocksData)) {
     blocksData.forEach((b, i) => {
       const el = document.getElementById("kv-b-" + i);

@@ -6,19 +6,19 @@ FastAPI application factory, lifespan manager, and CLI entrypoint.
 Usage:
     python -m serving.server                          # tiny model, CPU, port 8000
     python -m serving.server --model-config small     # 25M model
+    python -m serving.server --hf-model HuggingFaceTB/SmolLM2-135M-Instruct --num-kv-blocks 256
     python -m serving.server --model-config ./cfg.json --weights ./model.safetensors
-    python -m serving.server --tokenizer meta-llama/Llama-2-7b-hf --device cuda
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -28,7 +28,6 @@ from serving.routes import router
 logger = logging.getLogger(__name__)
 
 # ─── Module-level engine singleton ──────────────────────────────────────────
-# Populated by the lifespan handler; accessed by routes via ``app.state``.
 _engine: InferenceEngine | None = None
 
 
@@ -63,9 +62,6 @@ async def lifespan(app: FastAPI):
 def create_app(config: EngineConfig | None = None) -> FastAPI:
     """
     Build a FastAPI application wired to an ``InferenceEngine``.
-
-    Pass an ``EngineConfig`` to override defaults; otherwise the tiny
-    synthetic model is used (useful for tests).
     """
     config = config or EngineConfig()
     engine = _create_engine(config)
@@ -77,9 +73,15 @@ def create_app(config: EngineConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
-    # stash engine on app state so routes can grab it via Depends
-    app.state.engine = engine
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
+    app.state.engine = engine
     app.include_router(router)
 
     # Mount static assets and serve dashboard UI
@@ -103,9 +105,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="NanoInfer — Minimal LLM Inference Server",
     )
     p.add_argument(
+        "--hf-model",
+        default=None,
+        help="HuggingFace model repo ID or local dir (e.g. 'HuggingFaceTB/SmolLM2-135M-Instruct')",
+    )
+    p.add_argument(
         "--model-config",
         default="tiny",
-        help="Model config preset ('tiny', 'small') or path to a JSON config file",
+        help="Model config preset ('tiny', 'small', 'smollm2_135m') or path to a JSON config file",
     )
     p.add_argument(
         "--weights",
@@ -139,17 +146,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--port", type=int, default=8000, help="Bind port")
     p.add_argument(
         "--num-kv-blocks",
-        type=int, default=128,
+        type=int,
+        default=128,
         help="Number of KV cache blocks to pre-allocate",
     )
     p.add_argument(
         "--block-size",
-        type=int, default=16,
+        type=int,
+        default=16,
         help="Tokens per KV cache block",
     )
     p.add_argument(
         "--max-batch-size",
-        type=int, default=32,
+        type=int,
+        default=32,
         help="Maximum number of sequences in a batch",
     )
     p.add_argument(
@@ -170,14 +180,20 @@ def main(argv: list[str] | None = None) -> None:
         datefmt="%H:%M:%S",
     )
 
+    num_kv_blocks = args.num_kv_blocks
+    if args.hf_model and num_kv_blocks == 128:
+        num_kv_blocks = 512
+        logger.info("Auto-scaling default num_kv_blocks to 512 for HF model: %s", args.hf_model)
+
     engine_config = EngineConfig(
         model_config_preset=args.model_config,
         model_weights_path=args.weights,
         model_key_format=args.key_format,
+        hf_model=args.hf_model,
         dtype=args.dtype,
         device=args.device,
         tokenizer_path=args.tokenizer,
-        num_kv_blocks=args.num_kv_blocks,
+        num_kv_blocks=num_kv_blocks,
         block_size=args.block_size,
         max_batch_size=args.max_batch_size,
     )

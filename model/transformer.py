@@ -147,46 +147,38 @@ class Transformer(nn.Module):
 
     #forward pass
     def forward(
-            self,
-            token_ids : torch.Tensor,
-            kv_caches : Optional[List[KVCache]] = None,
-            positional_ids : Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:  
+        self,
+        token_ids: torch.Tensor,
+        kv_caches: Optional[List[KVCache]] = None,
+        positional_ids: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         B, T = token_ids.shape
         device = token_ids.device
 
-        #build positional ids
         if positional_ids is None:
-            if kv_caches is not None:
-                offset = kv_caches[0].seq_len
-            else:
-                offset = 0
-
-
+            offset = kv_caches[0].seq_len if kv_caches is not None else 0
             positional_ids = torch.arange(offset, offset + T, device=device).unsqueeze(0)
             positional_ids = positional_ids.expand(B, -1)
 
-
         x = self.embedding(token_ids)
-
-        attn_mask = None
 
         for i, block in enumerate(self.blocks):
             cache = kv_caches[i] if kv_caches is not None else None
             x = block(
                 x,
-                cos = self.rope_cos,
-                sin = self.rope_sin,
-                positional_ids = positional_ids,
-                kv_cache = cache,
-                attn_mask = attn_mask
+                cos=self.rope_cos,
+                sin=self.rope_sin,
+                positional_ids=positional_ids,
+                kv_cache=cache,
+                attn_mask=attn_mask,
             )
 
         x = self.norm(x)
         logits = self.lm_head(x)
-
         return logits
 
+        
     @torch.inference_mode()
     def generate(
         self,

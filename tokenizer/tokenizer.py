@@ -1,7 +1,7 @@
 from __future__ import annotations
 import re
 from functools import lru_cache
-from typing import Dict, List, Literal, Tuple, Optional
+from typing import Dict, List, Literal, Tuple, Optional, Union
 from tokenizer.vocabulary import Vocabulary, BYTE_TO_UNICODE
 
 
@@ -65,7 +65,133 @@ def bpe_encode_word(words_bytes: List[str], merge_ranks: Dict[Tuple[str, str], i
 
     return symbols
 
+class HFTokenizerWrapper:
+    """
+    Lightweight adapter around HuggingFace AutoTokenizer that exposes the exact
+    same interface as BPETokenizer (.encode, .decode, .vocab.BOS_ID, .vocab.EOS_ID, etc.).
+    """
 
+    def __init__(self, hf_tok, add_bos: bool = True, add_eos: bool = False):
+        self._tok = hf_tok
+        self.add_bos = add_bos
+        self.add_eos = add_eos
+
+        class _VocabProxy:
+            def __init__(self, tok):
+                self._tok = tok
+                self.vocab_size = len(tok)
+                self.BOS_ID = tok.bos_token_id if tok.bos_token_id is not None else 1
+                self.EOS_ID = tok.eos_token_id if tok.eos_token_id is not None else 2
+                self.PAD_ID = tok.pad_token_id if tok.pad_token_id is not None else self.EOS_ID
+                self.UNK_ID = tok.unk_token_id if tok.unk_token_id is not None else 0
+                self._special_ids = (
+                    set(tok.all_special_ids)
+                    if hasattr(tok, "all_special_ids") and tok.all_special_ids
+                    else {self.BOS_ID, self.EOS_ID, self.PAD_ID, self.UNK_ID}
+                )
+
+            def is_special(self, token_id: int) -> bool:
+                return token_id in self._special_ids
+
+            def id_to_token_safe(self, token_id: int) -> str:
+                try:
+                    res = self._tok.convert_ids_to_tokens(token_id)
+                    return str(res) if res is not None else "<unk>"
+                except Exception:
+                    return "<unk>"
+
+            def token_to_id_safe(self, token: str) -> int:
+                try:
+                    res = self._tok.convert_tokens_to_ids(token)
+                    return int(res) if res is not None else self.UNK_ID
+                except Exception:
+                    return self.UNK_ID
+
+        self.vocab = _VocabProxy(hf_tok)
+
+    def encode(
+        self,
+        text: str,
+        add_bos: Optional[bool] = None,
+        add_eos: Optional[bool] = None,
+        max_length: Optional[int] = None,
+        truncated: bool = True,
+        **kwargs,
+    ) -> List[int]:
+        ids = self._tok.encode(text, add_special_tokens=False)
+        _bos = add_bos if add_bos is not None else self.add_bos
+        _eos = add_eos if add_eos is not None else self.add_eos
+        if _bos and self.vocab.BOS_ID is not None:
+            ids = [self.vocab.BOS_ID] + ids
+        if _eos and self.vocab.EOS_ID is not None:
+            ids = ids + [self.vocab.EOS_ID]
+        if max_length is not None and truncated and len(ids) > max_length:
+            ids = ids[:max_length]
+        return ids
+
+    def decode(
+        self,
+        token_ids: Union[List[int], int],
+        skip_special_tokens: bool = True,
+    ) -> str:
+        if isinstance(token_ids, int):
+            token_ids = [token_ids]
+        return self._tok.decode(
+            token_ids,
+            skip_special_tokens=skip_special_tokens,
+            clean_up_tokenization_spaces=False,
+        )
+
+    def count_tokens(self, text: str) -> int:
+        return len(self.encode(text))
+
+    def encode_batch(
+        self,
+        texts: List[str],
+        pad: bool = True,
+        max_length: Optional[int] = None,
+        add_bos: Optional[bool] = None,
+        add_eos: Optional[bool] = None,
+    ) -> Tuple[List[List[int]], List[int]]:
+        encoded = [
+            self.encode(text, add_bos=add_bos, add_eos=add_eos, max_length=max_length)
+            for text in texts
+        ]
+        lengths = [len(ids) for ids in encoded]
+        if not pad:
+            return encoded, lengths
+        target_len = max_length if max_length is not None else max(lengths, default=0)
+        padded = [
+            ids + [self.vocab.PAD_ID] * (target_len - len(ids))
+            for ids in encoded
+        ]
+        return padded, lengths
+
+    def decode_batch(
+        self,
+        token_ids_batch: List[List[int]],
+        skip_special_tokens: bool = True,
+    ) -> List[str]:
+        return [
+            self.decode(ids, skip_special_tokens=skip_special_tokens)
+            for ids in token_ids_batch
+        ]
+
+    def __repr__(self) -> str:
+        return f"HFTokenizerWrapper(vocab_size={self.vocab.vocab_size})"
+
+    @classmethod
+    def from_huggingface(
+        cls,
+        model_name_or_path: str,
+        add_bos: bool = True,
+        add_eos: bool = False,
+    ) -> "HFTokenizerWrapper":
+        from transformers import AutoTokenizer
+        hf_tok = AutoTokenizer.from_pretrained(model_name_or_path)
+        return cls(hf_tok, add_bos=add_bos, add_eos=add_eos)
+
+            
 class BPETokenizer:
 
     def __init__(self, vocab: Vocabulary, add_bos: bool = False, add_eos: bool = False):
@@ -209,10 +335,14 @@ class BPETokenizer:
         model_name_or_path: str,
         add_bos: bool = True,
         add_eos: bool = False,
-    ) -> "BPETokenizer":
-
-        vocab = Vocabulary.from_hugginface(model_name_or_path)
-        return cls(vocab, add_bos=add_bos, add_eos=add_eos)
+    ) -> Union[HFTokenizerWrapper, "BPETokenizer"]:
+        try:
+            return HFTokenizerWrapper.from_huggingface(
+                model_name_or_path, add_bos=add_bos, add_eos=add_eos
+            )
+        except Exception:
+            vocab = Vocabulary.from_hugginface(model_name_or_path)
+            return cls(vocab, add_bos=add_bos, add_eos=add_eos)
 
     @classmethod
     def tiny_test(cls) -> "BPETokenizer":
