@@ -98,72 +98,72 @@ flowchart TD
     subgraph Clients ["Client & Load Layer"]
         direction LR
         CLI(["curl / HTTP / Python SDK"])
-        UI(["Interactive Web Dashboard<br/>(SSE Playground & Block Visualizer)"])
-        Harness(["Benchmark Harness<br/>(Concurrency Sweeps & HF Baseline)"])
+        UI(["Interactive Web Dashboard<br/>SSE Playground & Block Visualizer"])
+        Harness(["Benchmark Harness<br/>Concurrency Sweeps & HF Baseline"])
     end
 
     %% Serving Layer
-    subgraph ServingLayer ["1. Async Serving Layer (serving/)"]
+    subgraph ServingLayer ["1. Async Serving Layer - serving/"]
         Routes["FastAPI Router<br/><code>POST /generate</code> · <code>POST /v1/completions</code><br/><code>GET /api/state</code> · <code>GET /api/comparison</code>"]
-        Stream["RequestStream & SSE Dispatcher<br/>(Async Queue · Token Delta Formatter · Disconnect Hook)"]
-        Engine["InferenceEngine<br/>(Async Step Loop · Lock Governance · Lifecycle Manager)"]
+        Stream["RequestStream & SSE Dispatcher<br/>Async Queue · Token Delta Formatter · Disconnect Hook"]
+        Engine["InferenceEngine<br/>Async Step Loop · Lock Governance · Lifecycle Manager"]
     end
 
     %% Tokenizer & Sampler Setup
     subgraph PrePost ["2. Tokenization & Logits Pipeline"]
-        Tokenizer["BPE / HuggingFace Tokenizer<br/>(Byte-Level BPE · BOS/EOS · UTF-8 Delta Decode)"]
-        Sampler["Composable LogitsProcessor<br/>(Rep Penalty ➔ Temp ➔ Top-K ➔ Top-P ➔ Min-P)"]
+        Tokenizer["BPE / HuggingFace Tokenizer<br/>Byte-Level BPE · BOS/EOS · UTF-8 Delta Decode"]
+        Sampler["Composable LogitsProcessor<br/>Rep Penalty ➔ Temp ➔ Top-K ➔ Top-P ➔ Min-P"]
     end
 
     %% Scheduler Layer
-    subgraph SchedulerLayer ["3. Continuous Batching Scheduler (scheduler/)"]
-        Queue["Priority Request Queue<br/>(WAITING · RUNNING · SWAPPED · Anti-Starvation)"]
-        BatchMgr["BatchManager<br/>(Token Budget <code>max_tokens_per_step</code> · LRU Preemption)"]
-        StepBatch["StepBatch Work Packet<br/><code>prefill_requests (1, T)</code> + <code>decode_requests (B, 1)</code>"]
+    subgraph SchedulerLayer ["3. Continuous Batching Scheduler - scheduler/"]
+        Queue["Priority Request Queue<br/>WAITING · RUNNING · SWAPPED · Anti-Starvation"]
+        BatchMgr["BatchManager<br/>Token Budget <code>max_tokens_per_step</code> · LRU Preemption"]
+        StepBatch["StepBatch Work Packet<br/><code>prefill_requests [1, T]</code> + <code>decode_requests [B, 1]</code>"]
     end
 
     %% Memory Layer
-    subgraph MemoryLayer ["4. Paged KV Virtual Memory Manager (memory/)"]
-        Allocator["BlockAllocator<br/>(Free List · Ref-Counted Copy-on-Write · Instant Reclamation)"]
-        PageTable["Per-Sequence BlockTable<br/>(Logical Token Pos ➔ Physical <code>(block_id, slot)</code>)"]
+    subgraph MemoryLayer ["4. Paged KV Virtual Memory Manager - memory/"]
+        Allocator["BlockAllocator<br/>Free List · Ref-Counted Copy-on-Write · Instant Reclamation"]
+        PageTable["Per-Sequence BlockTable<br/>Logical Token Pos ➔ Physical <code>block_id, slot</code>"]
         KVViews["Paged Views<br/><code>SingleSeqPagedView</code> & <code>BatchedDecodePagedView</code>"]
         PhysicalSlab[("Physical KV Tensor Slab<br/><code>[n_layers, num_blocks, 16, n_kv_heads, d_head]</code>")]
     end
 
     %% Model Execution Layer
-    subgraph ModelLayer ["5. LLaMA Transformer Runtime (model/)"]
-        Embed["Input Embedding & Weight-Tied LM Head<br/>(Safetensors & HF Key Remapping)"]
-        Attn["Grouped-Query Attention (GQA)<br/>(RoPE Position Offsets · 4D Causal/Pad Mask)"]
-        FFN["Pre-Norm Transformer Blocks<br/>(RMSNorm + SwiGLU FFN × N Layers)"]
+    subgraph ModelLayer ["5. LLaMA Transformer Runtime - model/"]
+        Embed["Input Embedding & Weight-Tied LM Head<br/>Safetensors & HF Key Remapping"]
+        Attn["Grouped-Query Attention - GQA<br/>RoPE Position Offsets · 4D Causal/Pad Mask"]
+        FFN["Pre-Norm Transformer Blocks<br/>RMSNorm + SwiGLU FFN × N Layers"]
     end
 
-    %% Connections
-    CLI & UI & Harness -->|HTTP POST / SSE| Routes
-    Routes -->|Submit GenerateRequest| Engine
-    Engine -->|Encode Prompt| Tokenizer
-    Tokenizer -->|prompt_token_ids| Queue
+    %% Connections (all edge labels quoted for GitHub Mermaid parser safety)
+    CLI & UI & Harness -->|"HTTP POST / SSE"| Routes
+    Routes -->|"Submit GenerateRequest"| Engine
+    Engine -->|"Encode Prompt"| Tokenizer
+    Tokenizer -->|"prompt_token_ids"| Queue
 
-    Engine -->|Drive Locked Step| BatchMgr
-    Queue -->|Peek / Pop by Priority| BatchMgr
-    BatchMgr <-->|Check Free Blocks / Preempt| Allocator
-    BatchMgr -->|Admit & Form Batch| StepBatch
+    Engine -->|"Drive Locked Step"| BatchMgr
+    Queue -->|"Peek / Pop by Priority"| BatchMgr
+    BatchMgr <-->|"Check Free Blocks / Preempt"| Allocator
+    BatchMgr -->|"Admit & Form Batch"| StepBatch
 
-    StepBatch -->|Allocate Prompt / Next Slot| PageTable
-    PageTable <-->|Claim / Free 16-Token Pages| Allocator
-    PageTable -->|Build Layer Views & 4D Mask| KVViews
-    KVViews <-->|Scatter Write / Gather Read| PhysicalSlab
+    StepBatch -->|"Allocate Prompt / Next Slot"| PageTable
+    PageTable <-->|"Claim / Free 16-Token Pages"| Allocator
+    PageTable -->|"Build Layer Views & 4D Mask"| KVViews
+    KVViews <-->|"Scatter Write / Gather Read"| PhysicalSlab
 
-    StepBatch -->|Token IDs + Pos IDs| Embed
+    StepBatch -->|"Token IDs + Pos IDs"| Embed
     Embed --> Attn
-    KVViews -->|Cached K, V + 4D Mask| Attn
+    KVViews -->|"Cached K, V + 4D Mask"| Attn
     Attn --> FFN
-    FFN -->|Logits (B, 1, Vocab)| Sampler
+    FFN -->|"Logits [B, 1, Vocab]"| Sampler
 
-    Sampler -->|Next Token IDs| Engine
-    Engine -->|on_step_complete & Stop Check| BatchMgr
-    Engine -->|Decode Single Token| Tokenizer
-    Engine -->|Push StreamChunk| Stream
-    Stream -->|Real-Time SSE Stream| CLI & UI & Harness
+    Sampler -->|"Next Token IDs"| Engine
+    Engine -->|"on_step_complete & Stop Check"| BatchMgr
+    Engine -->|"Decode Single Token"| Tokenizer
+    Engine -->|"Push StreamChunk"| Stream
+    Stream -->|"Real-Time SSE Stream"| CLI & UI & Harness
 
     %% Node Styling
     classDef client fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc
@@ -180,7 +180,6 @@ flowchart TD
     class Embed,Attn,FFN model
     class Tokenizer,Sampler pipe
 ```
-
 ---
 
 ## Deep Dive: Core Mechanics
